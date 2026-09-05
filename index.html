@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>汎用記憶定着・項目別ランク学習管理システム</title>
+  <link rel="stylesheet" href="css/style.css?v=20260905_17">
+  <!-- Google Fonts -->
+
+
+
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-icon">🧠</span>
+      <div>
+        <h1 class="brand-title">汎用記憶定着・項目別ランク学習管理システム</h1>
+        <p id="app-header-subtitle" class="brand-subtitle">繁体字中文 出る順Top50 (SQLite Wasm / sql.js 駆動)</p>
+      </div>
+    </div>
+    <div class="header-controls">
+      <!-- 教材切り替えセレクター -->
+      <div class="scale-selector">
+        <label for="material-select">📚 教材:</label>
+        <select id="material-select"></select>
+        <button id="btn-open-import-modal" class="btn btn-primary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;">➕ 教材追加</button>
+      </div>
+
+      <!-- 評価体系セレクター -->
+      <div class="scale-selector">
+        <label for="scale-select">評価体系:</label>
+        <select id="scale-select"></select>
+      </div>
+    </div>
+  </header>
+
+  <!-- 🗄️ ようこそ！ ファイル主軸ウェルカム画面 (Welcome Overlay) -->
+  <div id="welcome-overlay" class="welcome-overlay">
+    <div class="welcome-card">
+      <div class="welcome-header">
+        <span class="welcome-icon">🗄️</span>
+        <h2 style="margin: 0.5rem 0; font-size: 1.5rem; color: #1e293b;">ランク学習管理システムへようこそ</h2>
+        <p style="color: #64748b; font-size: 0.92rem; line-height: 1.5; margin-bottom: 1.5rem;">
+          当システムは、手元のSQLiteデータベースファイル（.db）と直接同期して動作する<br>
+          <b>「ローカル実ファイル主軸（Local-First）」</b> の学習暗記アプリです。
+        </p>
+      </div>
+
+      <div class="welcome-body" style="display: flex; flex-direction: column; gap: 1rem;">
+        <div class="welcome-action-box primary-box">
+          <div class="action-icon">📂</div>
+          <div class="action-content">
+            <h3 style="margin: 0 0 0.25rem 0; font-size: 1.1rem; color: #0f172a;">既存のSQLiteファイルを開く（推奨）</h3>
+            <p style="margin: 0 0 0.75rem 0; font-size: 0.85rem; color: #64748b;">
+              プロジェクトの <code>learning_rank.db</code> や過去に保存した学習データファイルを開いて直接同期を開始します。
+            </p>
+            <button id="btn-welcome-open" class="btn btn-primary" style="padding: 0.6rem 1.25rem; font-size: 0.95rem; font-weight: 700;">
+              📂 PC上の実ファイルを開く
+            </button>
+          </div>
+        </div>
+
+        <div class="welcome-action-box">
+          <div class="action-icon">🌱</div>
+          <div class="action-content">
+            <h3 style="margin: 0 0 0.25rem 0; font-size: 1.05rem; color: #0f172a;">新規データベースを作成して始める</h3>
+            <p style="margin: 0 0 0.75rem 0; font-size: 0.85rem; color: #64748b;">
+              PC上の好きな場所（デスクトップ等）に新しい .db ファイルを新規作成して学習を開始します。
+            </p>
+            <button id="btn-welcome-create" class="btn btn-secondary" style="padding: 0.5rem 1rem; font-size: 0.9rem;">
+              🌱 新規ファイルを作成して保存
+            </button>
+          </div>
+        </div>
+
+        <div style="text-align: center; margin-top: 0.5rem; font-size: 0.85rem; color: #94a3b8;">
+          <span>まずはファイルを作らずに動作確認したい方：</span><br>
+          <button id="btn-welcome-demo" class="btn-link" style="background: none; border: none; color: var(--primary); text-decoration: underline; cursor: pointer; font-size: 0.85rem; padding: 0.25rem 0.5rem; margin-top: 0.25rem;">
+            🚀 内蔵サンプル教材でデモを試す（一時メモリ動作）
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 📁 ローカル実ファイル直接連携バー (File-First Status Bar) -->
+
+  <div class="file-sync-bar" id="file-sync-bar">
+    <div class="file-sync-info">
+      <span class="file-sync-icon" id="file-sync-icon">📁</span>
+      <div>
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <span style="font-weight: 700;" id="file-sync-name">未接続 (メモリ動作中)</span>
+          <span id="file-sync-status-badge" class="sync-badge sync-warning">⚠️ 未保存</span>
+        </div>
+        <div id="file-sync-details" style="font-size: 0.78rem; color: var(--text-muted);">
+          PC上の実ファイル（.db）を開くか新規保存すると、学習のたびに手元のファイルへ直接自動保存されます
+        </div>
+      </div>
+    </div>
+    <div class="file-sync-actions">
+      <input type="file" id="input-direct-file-open" accept=".sqlite,.db,.sqlite3" style="display: none;">
+      <button id="btn-file-open" class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;" title="PC上のSQLite実ファイル（.db / .sqlite）を開いて同期を開始">
+        📂 実ファイルを開く
+      </button>
+      <button id="btn-file-save-as" class="btn btn-primary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;" title="PC上の任意の場所に実ファイルとして保存＆同期開始">
+        💾 実ファイルに保存 (同期)
+      </button>
+    </div>
+  </div>
+
+
+
+  <!-- Navigation Tabs -->
+  <nav class="nav-tabs">
+
+    <button class="tab-btn active" data-tab="tab-dashboard">📊 ダッシュボード</button>
+    <button class="tab-btn" data-tab="tab-study">⚡ 学習（フラッシュカード）</button>
+    <button class="tab-btn" data-tab="tab-materials">📚 教材一覧・ランク管理</button>
+    <button class="tab-btn" data-tab="tab-logs">📜 学習履歴ログ</button>
+    <button class="tab-btn" data-tab="tab-settings">⚙️ DB管理・設定</button>
+  </nav>
+
+  <!-- Main Content Area -->
+  <main class="main-container">
+
+    <!-- 1. ダッシュボードタブ -->
+    <section id="tab-dashboard" class="tab-content active">
+      <!-- 復習推奨アラートバナー -->
+      <div id="due-alert-banner" class="alert-banner">
+        <div id="due-alert-text" class="alert-title">
+          <span>読み込み中...</span>
+        </div>
+      </div>
+
+      <!-- メトリクスカード群 -->
+      <div class="dashboard-grid">
+        <!-- 8〜9割定着 達成度 -->
+        <div class="card metric-card">
+          <div class="metric-title">🎯 8〜9割定着 達成度（上位ランク）</div>
+          <div class="metric-value-container">
+            <span id="metric-mastery-rate" class="metric-value">0%</span>
+            <span id="metric-mastery-count" class="metric-unit">0 / 0 項目</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div id="metric-mastery-fill" class="progress-bar-fill" style="width: 0%;"></div>
+          </div>
+        </div>
+
+        <!-- 学習ログ総数 -->
+        <div class="card metric-card">
+          <div class="metric-title">📈 累計学習セッション回数</div>
+          <div class="metric-value-container">
+            <span id="metric-total-logs" class="metric-value">0</span>
+            <span class="metric-unit">回</span>
+          </div>
+        </div>
+
+        <!-- 平均回答時間 -->
+        <div class="card metric-card">
+          <div class="metric-title">⏱️ 平均回答所要時間</div>
+          <div class="metric-value-container">
+            <span id="metric-avg-time" class="metric-value">0s</span>
+            <span class="metric-unit">/ 問</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ランク分布カード -->
+      <div class="card" style="margin-bottom: 2rem;">
+        <h3 style="margin-bottom: 0.5rem; font-size: 1.1rem;">📊 ランク別 定着状況分布</h3>
+        <div id="dashboard-dist-bar" class="distribution-bar"></div>
+        <div id="dashboard-dist-legend" class="distribution-legend"></div>
+      </div>
+
+      <!-- クイックアクションカード -->
+      <h3 style="margin-bottom: 1rem; font-size: 1.1rem;">🚀 おすすめ学習モード</h3>
+      <div class="action-card-grid">
+        <div class="action-card" id="btn-quick-unmastered">
+          <div>
+            <div class="action-card-header">
+              <span class="action-card-icon">🎯</span>
+              <h4 class="action-card-title">未定着・苦手優先モード</h4>
+            </div>
+            <p class="action-card-desc">未学習および低ランク項目を最優先で出題し、最短時間で8〜9割の定着を達成します。</p>
+          </div>
+          <button class="btn btn-primary">このモードで開始</button>
+        </div>
+
+        <div class="action-card" id="btn-quick-maintenance">
+          <div>
+            <div class="action-card-header">
+              <span class="action-card-icon">🔄</span>
+              <h4 class="action-card-title">記憶維持メンテナンスモード</h4>
+            </div>
+            <p class="action-card-desc">次回復習推奨日時が到来した項目を抽出。覚えた記憶を無理なく長期記憶として維持します。</p>
+          </div>
+          <button class="btn btn-secondary">復習を開始</button>
+        </div>
+
+        <div class="action-card" id="btn-quick-sequential">
+          <div>
+            <div class="action-card-header">
+              <span class="action-card-icon">🔢</span>
+              <h4 class="action-card-title">連番・ID順学習モード</h4>
+            </div>
+            <p class="action-card-desc">教材の登録順（ID連番）に出題。範囲を指定した小テスト対策や順番通りの確認に最適です。</p>
+          </div>
+          <button class="btn btn-secondary">番号順で開始</button>
+        </div>
+
+        <div class="action-card" id="btn-quick-autopilot" style="border: 2px solid #8b5cf6;">
+          <div>
+            <div class="action-card-header">
+              <span class="action-card-icon">🎧</span>
+              <h4 class="action-card-title" style="color: #6d28d9;">自動連続再生モード</h4>
+            </div>
+            <p class="action-card-desc">操作不要のハンズフリー耳学習。問題と答えを自動読み上げ＆就寝前スリープタイマーで繰り返し記憶定着。</p>
+          </div>
+          <button class="btn btn-secondary" style="color: #7c3aed; border-color: #ddd6fe;">🎧 すぐに聴く</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. 学習（フラッシュカード）タブ -->
+    <section id="tab-study" class="tab-content">
+      <!-- セットアップ画面 -->
+      <div id="study-setup-area" class="card study-setup-card" style="max-width: 600px; margin: 0 auto;">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.25rem;">
+          <h3 style="margin: 0; font-size: 1.25rem;">⚡ 学習セッションの開始</h3>
+          <span id="study-target-count-badge" class="sync-badge sync-primary" style="font-size: 0.85rem; padding: 0.35rem 0.75rem;">
+            🎯 対象項目: 計算中...
+          </span>
+        </div>
+        
+        <!-- 1. 出題モード -->
+        <div style="margin-bottom: 1.25rem;">
+          <label for="study-mode-select" style="display: block; font-weight: 600; margin-bottom: 0.4rem;">🎯 出題モード:</label>
+          <select id="study-mode-select" style="width: 100%; padding: 0.65rem; border-radius: 8px; border: 1px solid var(--border); font-size: 0.95rem;">
+            <option value="unmastered_first">🎯 未定着・苦手優先（最短8〜9割達成）</option>
+            <option value="sequential">🔢 連番・ID順学習（教材の番号順・小テスト確認）</option>
+            <option value="auto_playback">🎧 自動連続再生（ハンズフリー・耳学習・就寝前）</option>
+            <option value="maintenance">🔄 記憶維持メンテナンス（復習期日優先）</option>
+            <option value="all_shuffle">🎲 全件シャッフル出題</option>
+          </select>
+          <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem; margin-bottom: 0;">
+            「自動連続再生」は操作不要で、問題と答えを自動読み上げしながらループ再生します。
+          </p>
+        </div>
+
+        <!-- 自動連続再生 専用オプションパネル -->
+        <div id="auto-play-settings-panel" style="display: none; background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 8px; padding: 1rem; margin-bottom: 1.25rem;">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+            <label style="font-weight: 700; font-size: 0.95rem; color: #5b21b6;">
+              🎧 自動連続再生の設定（再生順・タイマー・間隔）:
+            </label>
+            <span style="font-size: 0.8rem; color: #7c3aed; font-weight: 600;">操作不要の耳学習</span>
+          </div>
+          <p style="font-size: 0.8rem; color: #6b7280; margin-top: 0; margin-bottom: 0.75rem;">
+            問題読み上げ後、少し考えてから答えを読み上げ、自動で次へ進みます。寝落ちしても勝手にランクは変わりません。
+          </p>
+          <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.6rem;">
+            <div>
+              <label for="auto-play-order-select" style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.3rem;">🔀 再生順序:</label>
+              <select id="auto-play-order-select" style="width: 100%; padding: 0.5rem; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 0.85rem;">
+                <option value="sequential" selected>🔢 連番・ID順</option>
+                <option value="all_shuffle">🎲 ランダム順</option>
+                <option value="unmastered_first">🎯 苦手・未定着順</option>
+              </select>
+            </div>
+            <div>
+              <label for="auto-play-timer-select" style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.3rem;">⏱️ 再生タイマー:</label>
+              <select id="auto-play-timer-select" style="width: 100%; padding: 0.5rem; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 0.85rem;">
+                <option value="5">5分間</option>
+                <option value="10">10分間</option>
+                <option value="15" selected>15分間 (推奨)</option>
+                <option value="30">30分間</option>
+                <option value="once">1周で終了</option>
+                <option value="unlimited">無制限</option>
+              </select>
+            </div>
+            <div>
+              <label for="auto-play-interval-select" style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.3rem;">⏳ 思考の間隔:</label>
+              <select id="auto-play-interval-select" style="width: 100%; padding: 0.5rem; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 0.85rem;">
+                <option value="1.5">1.5秒 (速め)</option>
+                <option value="2.5" selected>2.5秒 (標準)</option>
+                <option value="4.0">4.0秒 (長め)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. 出題範囲の限定（ID連番） -->
+        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1rem; margin-bottom: 1.25rem;">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+            <label style="font-weight: 700; font-size: 0.95rem; color: #1e293b;">
+              🎯 出題範囲の限定（ID連番）:
+            </label>
+            <span id="study-id-range-hint" style="font-size: 0.8rem; color: var(--text-muted);">
+              全体範囲: 1 〜 50
+            </span>
+          </div>
+          <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0; margin-bottom: 0.6rem;">
+            小テストのように範囲を絞って集中学習できます（空欄の場合は全範囲対象）。
+          </p>
+          <div style="display: flex; align-items: center; gap: 0.75rem;">
+            <div style="flex: 1;">
+              <input type="number" id="study-range-start" placeholder="開始ID (例: 1)" min="1" style="width: 100%; padding: 0.55rem; border-radius: 6px; border: 1px solid var(--border); font-size: 0.9rem;">
+            </div>
+            <span style="color: var(--text-muted); font-weight: 700;">〜</span>
+            <div style="flex: 1;">
+              <input type="number" id="study-range-end" placeholder="終了ID (例: 30)" min="1" style="width: 100%; padding: 0.55rem; border-radius: 6px; border: 1px solid var(--border); font-size: 0.9rem;">
+            </div>
+            <button type="button" id="btn-reset-id-range" class="btn btn-secondary" style="padding: 0.55rem 0.75rem; font-size: 0.8rem; white-space: nowrap;" title="ID範囲指定をクリア">リセット</button>
+          </div>
+        </div>
+
+        <!-- 3. 定着ランクによる限定 -->
+        <div style="margin-bottom: 1.25rem;">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.4rem;">
+            <label for="study-rank-filter" style="font-weight: 600;">🏷️ 定着ランクの限定:</label>
+            <span id="study-range-status-hint" style="font-size: 0.78rem; color: var(--text-muted);">出題範囲内の件数集計</span>
+          </div>
+          <select id="study-rank-filter" style="width: 100%; padding: 0.65rem; border-radius: 8px; border: 1px solid var(--border); font-size: 0.95rem;">
+            <option value="">すべてのランク（限定しない）</option>
+            <option value="unstudied">未学習のみ</option>
+          </select>
+          <!-- ランク別単語数クイック選択ピル群 -->
+          <div id="study-rank-pills" style="display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.5rem;"></div>
+          <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.4rem; margin-bottom: 0;">
+            出題範囲内のランク別単語数がリアルタイムに集計されます。バッジをクリックして素早く選択できます。
+          </p>
+        </div>
+
+        <!-- 4. 出題件数 -->
+        <div style="margin-bottom: 1.5rem;">
+          <label for="study-count-select" style="display: block; font-weight: 600; margin-bottom: 0.4rem;">📊 出題件数:</label>
+          <select id="study-count-select" style="width: 100%; padding: 0.65rem; border-radius: 8px; border: 1px solid var(--border); font-size: 0.95rem;">
+            <option value="all">🎯 対象全件（範囲内の全項目を出題）</option>
+            <option value="10">10 項目（サクッと学習）</option>
+            <option value="15" selected>15 項目（おすすめ）</option>
+            <option value="30">30 項目（しっかり学習）</option>
+            <option value="50">50 項目</option>
+          </select>
+        </div>
+
+        <button id="btn-start-custom-study" class="btn btn-primary btn-lg" style="width: 100%; font-size: 1.05rem; padding: 0.75rem;">学習を開始する</button>
+      </div>
+
+      <!-- アクティブ学習画面 -->
+      <div id="study-active-area" class="study-card-wrapper" style="display: none;">
+        <div class="study-progress-header">
+          <span id="study-progress-text" style="font-weight: 700; color: var(--text-muted);">1 / 15</span>
+          
+          <!-- セッション制御ボタン（通常学習） -->
+          <div id="normal-study-controls" style="display: flex; align-items: center; gap: 0.4rem;">
+            <button id="btn-pause-study" class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;" title="タイマーを一時停止 [P]">⏸️ 一時停止</button>
+            <button id="btn-quit-study" class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;" title="ここまでの学習を保存してセッションを終了 [Esc]">⏹️ 終了</button>
+          </div>
+
+          <!-- 自動連続再生 コントロールバー -->
+          <div id="auto-play-bar" style="display: none; align-items: center; gap: 0.4rem; background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 8px; padding: 0.25rem 0.6rem;">
+            <span style="font-weight: 700; color: #7c3aed; font-size: 0.8rem;">🎧 自動再生</span>
+            <span id="auto-play-timer-text" style="font-weight: 700; color: #5b21b6; font-size: 0.82rem; min-width: 60px;">⏳ 準備中</span>
+            <button id="btn-auto-play-prev" class="btn btn-secondary" style="padding: 0.2rem 0.45rem; font-size: 0.78rem;" title="前の単語へ [←]">⏮️</button>
+            <button id="btn-auto-play-pause" class="btn btn-primary" style="padding: 0.2rem 0.6rem; font-size: 0.78rem; background: #8b5cf6;" title="一時停止 / 再開 [Space / P]">⏸️ 一時停止</button>
+            <button id="btn-auto-play-next" class="btn btn-secondary" style="padding: 0.2rem 0.45rem; font-size: 0.78rem;" title="次の単語へ [→]">⏭️</button>
+            <button id="btn-auto-play-stop" class="btn btn-secondary" style="padding: 0.2rem 0.45rem; font-size: 0.78rem;" title="自動再生を終了 [Esc]">⏹️</button>
+          </div>
+
+          <!-- 音声読み上げコントロール -->
+          <div class="study-tts-controls" style="display: flex; align-items: center; gap: 0.75rem; font-size: 0.85rem;">
+            <label id="label-auto-speak" style="display: flex; align-items: center; gap: 0.35rem; cursor: pointer; color: var(--text-muted); font-weight: 600; white-space: nowrap;">
+              <input type="checkbox" id="check-auto-speak">
+              <span>🔊 自動発音</span>
+            </label>
+            <select id="select-speech-rate" style="padding: 0.2rem 0.4rem; border-radius: 4px; border: 1px solid var(--border); font-size: 0.8rem;" title="読み上げ速度">
+              <option value="0.8">0.8x (遅い)</option>
+              <option value="1.0" selected>1.0x (標準)</option>
+              <option value="1.2">1.2x (速い)</option>
+            </select>
+          </div>
+
+          <div class="timer-indicator">⏱️ <span id="card-timer">0.0s</span></div>
+        </div>
+        <div class="progress-bar-bg" style="margin-bottom: 1.5rem;">
+          <div id="study-session-progress-fill" class="progress-bar-fill" style="width: 0%;"></div>
+        </div>
+
+        <!-- フラッシュカード本体 -->
+        <div class="flashcard" style="position: relative;">
+          <!-- 一時停止オーバーレイ -->
+          <div id="study-pause-overlay" class="pause-overlay" style="display: none;">
+            <div class="pause-overlay-content">
+              <div style="font-size: 3.5rem; margin-bottom: 0.5rem;">☕</div>
+              <h3 style="margin-bottom: 0.5rem; font-size: 1.4rem;">一時停止中（休憩）</h3>
+              <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1.5rem;">回答時間のカウントを一時停止しています。<br>落ち着いて準備ができたら再開してください。</p>
+              <button id="btn-resume-study" class="btn btn-primary btn-lg" style="min-width: 220px;">
+                ▶️ 学習を再開する <span style="font-size: 0.8rem; opacity: 0.7;">[Space / P]</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="card-top-info">
+            <span id="card-material-label">教材項目</span>
+            <span id="card-current-rank" class="current-rank-badge">未学習</span>
+          </div>
+
+          <div class="word-display" style="position: relative; display: flex; align-items: center; justify-content: center; gap: 0.75rem;">
+            <div id="card-prompt" class="word-chinese">-</div>
+            <button id="btn-speak-prompt" class="btn-tts-icon" title="問題文を発音 (ショートカット: R)">🔊</button>
+          </div>
+
+          <!-- 答え表示ボタン -->
+          <div style="text-align: center;">
+            <button id="btn-show-answer" class="btn btn-secondary btn-lg" style="min-width: 220px;">
+              答えを表示 <span style="font-size: 0.8rem; opacity: 0.7;">[Space]</span>
+            </button>
+          </div>
+
+          <!-- 回答展開エリア -->
+          <div id="card-answer-area" class="answer-container" style="display: none;">
+            <div id="card-hints-row" class="phonetics-row"></div>
+            <div style="display: flex; align-items: center; justify-content: center; gap: 0.75rem; margin-bottom: 1rem;">
+              <div id="card-answer" class="meaning-box" style="margin-bottom: 0;">-</div>
+              <button id="btn-speak-answer" class="btn-tts-icon" title="回答を発音">🔊</button>
+            </div>
+
+            <!-- 通常学習用のランク評価コンテナ -->
+            <div id="card-eval-container">
+              <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.75rem;">定着ランクを自己評価してください：</p>
+              <div id="rank-buttons-container" class="rank-buttons-group"></div>
+            </div>
+          </div>
+
+          <!-- 自動連続再生 ステータスバー（カード下部） -->
+          <div id="auto-play-card-status-area" style="display: none; text-align: center; margin-top: 1rem; padding: 0.85rem; background: #f5f3ff; border-radius: 8px; border: 1px dashed #c4b5fd;">
+            <div id="auto-play-card-status" style="font-size: 1rem; font-weight: 700; color: #6d28d9;">🎧 自動再生中...</div>
+            <div style="font-size: 0.75rem; color: #7c3aed; margin-top: 0.35rem;">[Space/P] 一時停止 / [←][→] 前後スキップ / [Esc] 終了</div>
+          </div>
+        </div>
+
+
+      </div>
+
+      <!-- 完了画面 -->
+      <div id="study-complete-area" class="card study-card-wrapper session-complete-card" style="display: none;">
+        <div class="complete-icon">🎉</div>
+        <h2 style="margin-bottom: 0.5rem;">学習セッション完了！</h2>
+        <p style="color: var(--text-muted); margin-bottom: 1.5rem;">お疲れ様でした。今回の学習データは即座にデータベースに記録されました。</p>
+
+        <div style="display: flex; justify-content: center; gap: 2rem; margin-bottom: 2rem;">
+          <div>
+            <div style="font-size: 0.85rem; color: var(--text-muted);">学習項目数</div>
+            <div id="summary-total-count" style="font-size: 1.75rem; font-weight: 800;">0</div>
+          </div>
+          <div>
+            <div style="font-size: 0.85rem; color: var(--text-muted);">平均回答時間</div>
+            <div id="summary-avg-time" style="font-size: 1.75rem; font-weight: 800;">0s</div>
+          </div>
+        </div>
+
+        <button id="btn-restart-study" class="btn btn-primary btn-lg">続けて学習する</button>
+      </div>
+    </section>
+
+    <!-- 3. 教材一覧・ランク管理タブ -->
+    <section id="tab-materials" class="tab-content">
+      <div class="table-controls">
+        <input type="text" id="material-search" class="search-input" placeholder="🔍 問題・読み・回答で検索...">
+        <select id="material-rank-filter" style="padding: 0.6rem 1rem; border-radius: 8px; border: 1px solid var(--border);">
+          <option value="">すべてのランク</option>
+        </select>
+      </div>
+
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead id="materials-table-head">
+            <tr>
+              <th style="width: 60px;">ID</th>
+              <th>問題・見出し</th>
+              <th>補足・読み</th>
+              <th>正解・意味</th>
+              <th>定着ランク設定</th>
+              <th>学習回数</th>
+            </tr>
+          </thead>
+          <tbody id="materials-table-body">
+            <!-- JSで動的生成 -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 4. 学習履歴ログタブ -->
+    <section id="tab-logs" class="tab-content">
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width: 80px;">ログID</th>
+              <th>学習日時</th>
+              <th>問題項目</th>
+              <th>正解・意味</th>
+              <th>評価ランク</th>
+              <th>回答時間</th>
+            </tr>
+          </thead>
+          <tbody id="logs-table-body">
+            <!-- JSで動的生成 -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 5. DB管理・設定タブ -->
+    <section id="tab-settings" class="tab-content">
+      <!-- 登録教材の管理 -->
+      <div class="card settings-section">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem;">
+          <h3>📚 登録済み教材の管理</h3>
+          <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            <label class="btn btn-secondary" style="cursor: pointer; padding: 0.4rem 0.8rem; font-size: 0.9rem;">
+              📦 教材パックを復元 (JSON)
+              <input type="file" id="input-import-pack" accept=".json" style="display: none;">
+            </label>
+            <button id="btn-open-import-modal-2" class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.9rem;">➕ 新規CSV教材をインポート</button>
+          </div>
+        </div>
+        <p style="color: var(--text-muted); margin-bottom: 1rem;">
+          SQLiteデータベース内に格納されている教材テーブル一覧です。各教材は「パック保存」で進捗・履歴ごとエクスポートして退避・共有できます。
+        </p>
+        <div class="table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>教材ID (識別子)</th>
+                <th>表示名</th>
+                <th>総項目数</th>
+                <th>問題列 / 回答列</th>
+                <th>登録日時</th>
+                <th style="width: 220px; text-align: center;">操作</th>
+              </tr>
+            </thead>
+            <tbody id="catalog-table-body">
+
+              <!-- JSで動的生成 -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- SQLiteファイル管理 -->
+      <div class="card settings-section">
+        <h3>💾 ローカルSQLiteファイル管理</h3>
+        <p style="color: var(--text-muted); margin-bottom: 1rem;">
+          当システムはブラウザ内 SQLite Wasm（sql.js）により完全にローカルで動作します。
+          データベースファイル（.sqlite）をエクスポートしてPCに保存したり、過去のバックアップファイルを読み込むことができます。
+        </p>
+        <div class="db-action-buttons">
+          <button id="btn-export-db" class="btn btn-primary">📥 SQLiteファイルをエクスポート</button>
+          
+          <label class="btn btn-secondary" style="cursor: pointer;">
+            📤 SQLiteファイルをインポート
+            <input type="file" id="input-import-db" accept=".sqlite,.db" style="display: none;">
+          </label>
+
+          <button id="btn-reset-db" class="btn btn-secondary" style="color: var(--danger);">🔄 初期状態にリセット</button>
+        </div>
+      </div>
+
+      <!-- 内部SQLコンソール -->
+      <div class="card settings-section">
+        <h3>🔍 内部SQLコンソール (開発・デバッグ用)</h3>
+        <p style="color: var(--text-muted); margin-bottom: 0.75rem;">
+          SQLite Wasm に対して直接SQLを実行できます。（例: <code>SELECT * FROM MATERIALS_CATALOG</code>）
+        </p>
+        <div class="sql-console">
+          <textarea id="custom-sql-input" placeholder="SELECT * FROM MATERIALS_CATALOG;">SELECT * FROM MATERIALS_CATALOG;</textarea>
+          <button id="btn-run-sql" class="btn btn-primary">SQL実行</button>
+        </div>
+        <div id="sql-result-area" class="table-wrapper" style="margin-top: 1rem; max-height: 300px; overflow-y: auto;"></div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- 新規CSV教材インポート モーダル -->
+  <div id="csv-import-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>📥 新規CSV教材のインポート</h3>
+        <button id="btn-close-import-modal" class="modal-close-btn">&times;</button>
+      </div>
+
+      <!-- ステップ1: ファイル選択 -->
+      <div id="import-step-file">
+        <div class="form-group" style="margin-bottom: 1rem;">
+          <label>CSVファイルを選択（またはドラッグ＆ドロップ）：</label>
+          <div id="dropzone" class="file-dropzone">
+            <p style="font-size: 1.25rem; margin-bottom: 0.5rem;">📄</p>
+            <p style="font-weight: 600;">ここをクリックしてCSVを選択、またはファイルをドラッグ</p>
+            <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">UTF-8形式のCSVファイル（列数は自由）</p>
+            <input type="file" id="csv-file-input" accept=".csv" style="display: none;">
+          </div>
+        </div>
+      </div>
+
+      <!-- ステップ2: メタデータ設定 & カラムマッピング（CSVロード後表示） -->
+      <div id="import-step-config" style="display: none;">
+        <div class="form-group" style="margin-bottom: 1rem;">
+          <label for="new-material-name">教材表示名 (例: TOEIC英単語Top100):</label>
+          <input type="text" id="new-material-name" class="form-control" placeholder="例: TOEIC英単語Top100">
+        </div>
+
+        <div class="form-group" style="margin-bottom: 1.25rem;">
+          <label for="new-material-type">教材識別ID (半角英数_):</label>
+          <input type="text" id="new-material-type" class="form-control" placeholder="例: english_toeic100">
+        </div>
+
+        <h4 style="font-size: 0.95rem; margin-bottom: 0.5rem;">列マッピング設定（カード表示の割り当て）</h4>
+        <div class="column-mapping-grid" style="margin-bottom: 1rem;">
+          <div class="form-group">
+            <label for="map-prompt-col">問題・見出し列 (表側):</label>
+            <select id="map-prompt-col" class="form-control"></select>
+          </div>
+          <div class="form-group">
+            <label for="map-answer-col">正解・意味列 (裏側):</label>
+            <select id="map-answer-col" class="form-control"></select>
+          </div>
+          <div class="form-group" style="grid-column: span 2;">
+            <label for="map-hint-cols">補足・読み列 (カンマ区切り、裏側上部):</label>
+            <input type="text" id="map-hint-cols" class="form-control" placeholder="例: phonetic または zhuyin,pinyin">
+          </div>
+        </div>
+
+        <h4 style="font-size: 0.95rem; margin-bottom: 0.5rem;">データプレビュー（先頭数件）</h4>
+        <div class="preview-table-wrapper" style="margin-bottom: 1.5rem;">
+          <table class="data-table" id="csv-preview-table"></table>
+        </div>
+
+        <div style="display: flex; justify-content: flex-end; gap: 1rem;">
+          <button id="btn-cancel-import" class="btn btn-secondary">キャンセル</button>
+          <button id="btn-execute-import" class="btn btn-primary btn-lg">教材を登録して学習開始</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 教材設定の編集・複製 モーダル -->
+  <div id="material-edit-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="edit-modal-title">✏️ 教材設定の編集</h3>
+        <button id="btn-close-edit-modal" class="modal-close-btn">&times;</button>
+      </div>
+
+      <input type="hidden" id="edit-source-material-type">
+      <input type="hidden" id="edit-modal-mode" value="edit"> <!-- 'edit' または 'clone' -->
+
+      <div id="clone-id-group" class="form-group" style="margin-bottom: 1rem; display: none;">
+        <label for="edit-new-material-type">新規教材ID (半角英数_):</label>
+        <input type="text" id="edit-new-material-type" class="form-control" placeholder="例: chinese_top50_reverse">
+        <span style="font-size: 0.8rem; color: var(--text-muted);">元データを複製し、別教材として学習進捗を独立して管理します。</span>
+      </div>
+
+      <div class="form-group" style="margin-bottom: 1rem;">
+        <label for="edit-material-name">教材表示名:</label>
+        <input type="text" id="edit-material-name" class="form-control" placeholder="例: 繁体字中文 出る順Top50 (日→中)">
+      </div>
+
+      <h4 style="font-size: 0.95rem; margin-bottom: 0.5rem;">カード表示列の設定（出題の向き）</h4>
+      <div class="column-mapping-grid" style="margin-bottom: 1.5rem;">
+        <div class="form-group">
+          <label for="edit-prompt-col">問題・見出し列 (表側):</label>
+          <select id="edit-prompt-col" class="form-control"></select>
+        </div>
+        <div class="form-group">
+          <label for="edit-answer-col">正解・意味列 (裏側):</label>
+          <select id="edit-answer-col" class="form-control"></select>
+        </div>
+        <div class="form-group" style="grid-column: span 2;">
+          <label for="edit-hint-cols">補足・読み列 (カンマ区切り、裏側上部):</label>
+          <input type="text" id="edit-hint-cols" class="form-control" placeholder="例: zhuyin,pinyin または phonetic">
+        </div>
+      </div>
+
+      <h4 style="font-size: 0.95rem; margin-bottom: 0.5rem;">🔊 音声読み上げの設定</h4>
+      <div class="column-mapping-grid" style="margin-bottom: 1.5rem;">
+        <div class="form-group">
+          <label for="edit-prompt-speech-col">問題の発音対象列:</label>
+          <select id="edit-prompt-speech-col" class="form-control"></select>
+          <span style="font-size: 0.78rem; color: var(--text-muted);">例: 漢字を表示しつつピンイン/注音を読ませる場合に指定</span>
+        </div>
+        <div class="form-group">
+          <label for="edit-prompt-lang">問題列の発音言語:</label>
+          <select id="edit-prompt-lang" class="form-control">
+            <option value="auto">🌐 自動判定 (推奨)</option>
+            <option value="zh-TW">🇹🇼 台湾華語 (zh-TW)</option>
+            <option value="zh-CN">🇨🇳 普通話/標準中国語 (zh-CN)</option>
+            <option value="ja-JP">🇯🇵 日本語 (ja-JP)</option>
+            <option value="en-US">🇺🇸 英語 (en-US)</option>
+            <option value="zhuyin">注音符号 (ChineseTTS)</option>
+            <option value="pinyin">ピンイン (ChineseTTS)</option>
+            <option value="none">🔇 読み上げなし</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="edit-answer-speech-col">回答の発音対象列:</label>
+          <select id="edit-answer-speech-col" class="form-control"></select>
+          <span style="font-size: 0.78rem; color: var(--text-muted);">例: 回答表示列と別の発音ソースを読ませる場合に指定</span>
+        </div>
+        <div class="form-group">
+          <label for="edit-answer-lang">回答列の発音言語:</label>
+          <select id="edit-answer-lang" class="form-control">
+            <option value="auto">🌐 自動判定 (推奨)</option>
+            <option value="ja-JP">🇯🇵 日本語 (ja-JP)</option>
+            <option value="zh-TW">🇹🇼 台湾華語 (zh-TW)</option>
+            <option value="zh-CN">🇨🇳 普通話/標準中国語 (zh-CN)</option>
+            <option value="en-US">🇺🇸 英語 (en-US)</option>
+            <option value="zhuyin">注音符号 (ChineseTTS)</option>
+            <option value="pinyin">ピンイン (ChineseTTS)</option>
+            <option value="none">🔇 読み上げなし</option>
+          </select>
+        </div>
+      </div>
+
+
+      <div style="display: flex; justify-content: flex-end; gap: 1rem;">
+        <button id="btn-cancel-edit" class="btn btn-secondary">キャンセル</button>
+        <button id="btn-save-material-edit" class="btn btn-primary btn-lg">設定を保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- sql.js Wasm Library -->
+  <script src="lib/sql-wasm.js"></script>
+  <!-- ChineseTTS & SpeechService Library -->
+  <script src="chinese_tts_package/chinese-tts.js?v=20260906_04"></script>
+  <script src="js/speech.js?v=20260906_04"></script>
+  <!-- App Scripts -->
+  <script src="js/file_sync.js?v=20260906_04"></script>
+  <script src="js/auto_playback.js?v=20260906_04"></script>
+  <script src="js/study_session.js?v=20260906_04"></script>
+  <script src="js/material_manager.js?v=20260906_04"></script>
+  <script src="js/ui_views.js?v=20260906_04"></script>
+  <script src="js/db.js?v=20260906_04"></script>
+  <script src="js/app.js?v=20260906_04"></script>
+</body>
+
+</html>
