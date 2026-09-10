@@ -16,6 +16,7 @@ class AutoPlaybackManager {
     this.dbService = dbService;
     this.speechService = speechService;
     this.studySessionManager = studySessionManager;
+    this.wakeLock = null;
   }
 
   getEl(id) {
@@ -28,6 +29,29 @@ class AutoPlaybackManager {
     if (dbService) this.dbService = dbService;
     if (speechService) this.speechService = speechService;
     if (studySessionManager) this.studySessionManager = studySessionManager;
+  }
+
+  /**
+   * 睡眠学習・連続再生中の画面自動スリープ・ロックを防止 (Screen Wake Lock API)
+   */
+  async requestWakeLock() {
+    if (typeof navigator !== 'undefined' && 'wakeLock' in navigator) {
+      try {
+        this.wakeLock = await navigator.wakeLock.request('screen');
+      } catch (err) {
+        console.warn('[AutoPlaybackManager] WakeLock not available or rejected:', err);
+      }
+    }
+  }
+
+  releaseWakeLock() {
+    if (this.wakeLock) {
+      this.wakeLock.release().then(() => {
+        this.wakeLock = null;
+      }).catch(() => {
+        this.wakeLock = null;
+      });
+    }
   }
 
   get session() {
@@ -79,12 +103,23 @@ class AutoPlaybackManager {
     session.autoPlayStepTimeout = null;
     session.autoPlayLoopCount = 1;
 
+    // 通常学習タイマー（放置ガードタイマー）を確実に停止
+    if (this.studySessionManager && typeof this.studySessionManager.stopTimer === 'function') {
+      this.studySessionManager.stopTimer();
+    }
+
     // UIの切り替え
     const setupArea = this.getEl('study-setup-area');
     if (setupArea) setupArea.style.display = 'none';
 
     const activeArea = this.getEl('study-active-area');
     if (activeArea) activeArea.style.display = 'block';
+
+    const overlay = this.getEl('study-pause-overlay');
+    if (overlay) overlay.style.display = 'none';
+
+    const normalControls = this.getEl('normal-study-controls');
+    if (normalControls) normalControls.style.display = 'none';
 
     const autoPlayBar = this.getEl('auto-play-bar');
     if (autoPlayBar) autoPlayBar.style.display = 'flex';
@@ -98,6 +133,9 @@ class AutoPlaybackManager {
 
     const btnPause = this.getEl('btn-auto-play-pause');
     if (btnPause) btnPause.textContent = '⏸️ 一時停止';
+
+    // 画面スリープ防止（WakeLock）
+    this.requestWakeLock();
 
     // タイマー開始
     this.startAutoPlayTimer();
@@ -329,27 +367,50 @@ class AutoPlaybackManager {
     this.runAutoPlayCycle();
   }
 
+  /**
+   * 自動再生の一時停止
+   */
+  pause() {
+    const session = this.session;
+    if (!session || !session.isActive || !session.isAutoPlay || session.isPaused) return;
+    session.isPaused = true;
+    this.stopCurrentSpeechAndTimer();
+    this.releaseWakeLock();
+    const btn = this.getEl('btn-auto-play-pause');
+    if (btn) btn.textContent = '▶️ 再開';
+    this.setAutoPlayCardStatus('⏸️ 一時停止中');
+  }
+
+  /**
+   * 自動再生の再開
+   */
+  resume() {
+    const session = this.session;
+    if (!session || !session.isActive || !session.isAutoPlay || !session.isPaused) return;
+    session.isPaused = false;
+    this.requestWakeLock();
+    const overlay = this.getEl('study-pause-overlay');
+    if (overlay) overlay.style.display = 'none';
+    const btn = this.getEl('btn-auto-play-pause');
+    if (btn) btn.textContent = '⏸️ 一時停止';
+    this.setAutoPlayCardStatus('▶️ 再開しました');
+    this.runAutoPlayCycle();
+  }
+
   togglePause() {
     const session = this.session;
     if (!session || !session.isActive || !session.isAutoPlay) return;
     if (session.isPaused) {
-      session.isPaused = false;
-      const btn = this.getEl('btn-auto-play-pause');
-      if (btn) btn.textContent = '⏸️ 一時停止';
-      this.setAutoPlayCardStatus('▶️ 再開しました');
-      this.runAutoPlayCycle();
+      this.resume();
     } else {
-      session.isPaused = true;
-      this.stopCurrentSpeechAndTimer();
-      const btn = this.getEl('btn-auto-play-pause');
-      if (btn) btn.textContent = '▶️ 再開';
-      this.setAutoPlayCardStatus('⏸️ 一時停止中');
+      this.pause();
     }
   }
 
   finish(msg = '自動連続再生を終了しました。') {
     this.stopCurrentSpeechAndTimer();
     this.stopAutoPlayTimer();
+    this.releaseWakeLock();
     const session = this.session;
     if (session) {
       session.isActive = false;
@@ -361,6 +422,9 @@ class AutoPlaybackManager {
 
     const autoPlayBar = this.getEl('auto-play-bar');
     if (autoPlayBar) autoPlayBar.style.display = 'none';
+
+    const normalControls = this.getEl('normal-study-controls');
+    if (normalControls) normalControls.style.display = 'flex';
 
     const labelAutoSpeak = this.getEl('label-auto-speak');
     if (labelAutoSpeak) labelAutoSpeak.style.display = 'inline-flex';

@@ -424,6 +424,9 @@ class StudySessionManager {
   startTimer() {
     this.stopTimer();
     const session = this.state;
+    // 自動連続再生モード中は通常タイマー（および放置ガード）を動かさない
+    if (session.isAutoPlay) return;
+
     session.isPaused = false;
     session.accumulatedMs = 0;
     session.currentRunStart = Date.now();
@@ -449,8 +452,8 @@ class StudySessionManager {
         timerEl.textContent = (totalElapsed / 1000).toFixed(1) + 's';
       }
 
-      // 60秒経過で自動一時停止（放置ガード）
-      if (totalElapsed >= 60000) {
+      // 60秒経過で自動一時停止（通常学習時の放置ガード）
+      if (!session.isAutoPlay && totalElapsed >= 60000) {
         this.pause(true);
       }
     }, 100);
@@ -474,9 +477,19 @@ class StudySessionManager {
     const session = this.state;
     if (!session.isActive || session.isPaused) return;
 
+    // 自動再生モード中、自動一時停止（60秒無操作・非アクティブ検知）は無効化（睡眠学習・耳学習のため）
+    if (isAuto && session.isAutoPlay) {
+      return;
+    }
+
     session.accumulatedMs += (Date.now() - session.currentRunStart);
     session.isPaused = true;
     this.stopTimer();
+
+    // 自動再生中の手動一時停止なら、AutoPlaybackManagerの一時停止も同期
+    if (session.isAutoPlay && this.autoPlaybackManager) {
+      this.autoPlaybackManager.pause();
+    }
 
     const overlay = this.getEl('study-pause-overlay');
     if (overlay) {
@@ -511,6 +524,14 @@ class StudySessionManager {
     const overlay = this.getEl('study-pause-overlay');
     if (overlay) overlay.style.display = 'none';
 
+    // 自動再生モード中の再開はAutoPlaybackManagerに委譲
+    if (session.isAutoPlay) {
+      if (this.autoPlaybackManager) {
+        this.autoPlaybackManager.resume();
+      }
+      return;
+    }
+
     const pauseBtn = this.getEl('btn-pause-study');
     if (pauseBtn) pauseBtn.textContent = '⏸️ 一時停止';
 
@@ -527,7 +548,7 @@ class StudySessionManager {
         timerEl.textContent = (totalElapsed / 1000).toFixed(1) + 's';
       }
 
-      if (totalElapsed >= 60000) {
+      if (!session.isAutoPlay && totalElapsed >= 60000) {
         this.pause(true);
       }
     }, 100);

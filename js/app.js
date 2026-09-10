@@ -450,10 +450,14 @@ class App {
       btnAutoPlayStop.addEventListener('click', () => this.finishAutoPlay('自動連続再生を停止しました。'));
     }
 
-    // ブラウザタブ非アクティブ時の自動一時停止
+    // ブラウザタブ非アクティブ時の自動一時停止（※自動連続再生中は睡眠学習・耳学習のため停止させない）
     if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
       document.addEventListener('visibilitychange', () => {
         if (document.hidden && this.studySession.isActive && !this.studySession.isPaused) {
+          if (this.studySession.isAutoPlay) {
+            // 自動再生モード中は画面消灯やバックグラウンドでも再生を維持
+            return;
+          }
           this.pauseStudySession(true);
         }
       });
