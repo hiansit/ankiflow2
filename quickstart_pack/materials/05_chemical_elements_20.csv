@@ -1,0 +1,21 @@
+﻿id,word,meaning_ja,atomic_number,category
+1,H,水素 (Hydrogen),1,非金属
+2,He,ヘリウム (Helium),2,希ガス
+3,Li,リチウム (Lithium),3,アルカリ金属
+4,Be,ベリリウム (Beryllium),4,アルカリ土類金属
+5,B,ホウ素 (Boron),5,半金属
+6,C,炭素 (Carbon),6,非金属
+7,N,窒素 (Nitrogen),7,非金属
+8,O,酸素 (Oxygen),8,非金属
+9,F,フッ素 (Fluorine),9,ハロゲン
+10,Ne,ネオン (Neon),10,希ガス
+11,Na,ナトリウム (Sodium),11,アルカリ金属
+12,Mg,マグネシウム (Magnesium),12,アルカリ土類金属
+13,Al,アルミニウム (Aluminium),13,卑金属
+14,Si,ケイ素 (Silicon),14,半金属
+15,P,リン (Phosphorus),15,非金属
+16,S,硫黄 (Sulfur),16,非金属
+17,Cl,塩素 (Chlorine),17,ハロゲン
+18,K,カリウム (Potassium),19,アルカリ金属
+19,Ca,カルシウム (Calcium),20,アルカリ土類金属
+20,Fe,鉄 (Iron),26,遷移金属
