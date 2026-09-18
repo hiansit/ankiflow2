@@ -308,6 +308,19 @@ class DBService {
   }
 
   /**
+   * 教材ID（テーブル名）のサニタイズ
+   * 半角英数字とアンダースコアのみに変換し、先頭が数字の場合はSQLite識別子エラー防止のためプレフィックス 'm_' を付与
+   */
+  sanitizeMaterialType(materialType) {
+    if (!materialType || typeof materialType !== 'string') return '';
+    let safe = materialType.trim().replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
+    if (/^[0-9]/.test(safe)) {
+      safe = 'm_' + safe;
+    }
+    return safe;
+  }
+
+  /**
    * 新規CSVから教材テーブルを作成しカタログに登録
    */
   async importNewMaterialFromCsv({
@@ -328,8 +341,8 @@ class DBService {
       throw new Error('教材ID、表示名、CSVデータは必須です。');
     }
 
-    // テーブル名・IDサニタイズ（半角英数字とアンダースコアのみ）
-    const safeMaterialType = materialType.trim().replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
+    // テーブル名・IDサニタイズ（半角英数字とアンダースコアのみ、先頭数字時はm_自動補完）
+    const safeMaterialType = this.sanitizeMaterialType(materialType);
     if (!safeMaterialType) {
       throw new Error('有効な教材識別子を入力してください（半角英数推奨）。');
     }
@@ -535,7 +548,7 @@ class DBService {
     }
 
     const { catalog, items, progress = [], logs = [] } = pkg;
-    const materialType = catalog.material_type.trim().replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
+    const materialType = this.sanitizeMaterialType(catalog.material_type);
     const displayName = catalog.display_name || materialType;
     const idCol = catalog.id_column || 'id';
 
@@ -775,7 +788,10 @@ class DBService {
       throw new Error('複製元ID、新規ID、表示名は必須です。');
     }
 
-    const safeNewType = newMaterialType.trim().replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
+    const safeNewType = this.sanitizeMaterialType(newMaterialType);
+    if (!safeNewType) {
+      throw new Error('有効な新規教材識別子を入力してください（半角英数推奨）。');
+    }
     const sourceMeta = this.getMaterialMetadata(sourceMaterialType);
 
     // 新テーブルを作成して全データを複製

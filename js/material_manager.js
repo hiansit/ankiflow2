@@ -175,7 +175,12 @@ class MaterialManager {
 
     // デフォルト名推定
     const baseName = file.name.replace(/\.csv$/i, '');
-    const cleanId = baseName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
+    let cleanId = (this.dbService && typeof this.dbService.sanitizeMaterialType === 'function')
+      ? this.dbService.sanitizeMaterialType(baseName)
+      : baseName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
+    if (/^[0-9]/.test(cleanId)) {
+      cleanId = 'm_' + cleanId;
+    }
     const nameInput = this.getEl('new-material-name');
     const typeInput = this.getEl('new-material-type');
     if (nameInput) nameInput.value = baseName;
