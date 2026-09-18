@@ -57,6 +57,18 @@ class FileSyncService {
     }
 
     try {
+      // 権限確認・要求（ユーザー操作コンテキストが残っていれば要求を試みる）
+      if (typeof this.fileHandle.queryPermission === 'function') {
+        const queryStatus = await this.fileHandle.queryPermission({ mode: 'readwrite' });
+        if (queryStatus !== 'granted' && typeof this.fileHandle.requestPermission === 'function') {
+          try {
+            await this.fileHandle.requestPermission({ mode: 'readwrite' });
+          } catch (pErr) {
+            console.warn('[FileSyncService] Permission request deferred (requires user gesture):', pErr);
+          }
+        }
+      }
+
       const binary = this.dbService.exportBinary();
       const writable = await this.fileHandle.createWritable();
       await writable.write(binary);
@@ -67,9 +79,13 @@ class FileSyncService {
       console.log(`[FileSyncService] Successfully saved to local file: ${this.fileName} (${binary.length} bytes)`);
       return true;
     } catch (err) {
-      console.error('[FileSyncService] Failed to write to local file handle:', err);
+      // User activationエラーや権限未許可等の場合でも、業務処理（教材インポートや学習進行）を停止させないよう安全にフォールバック
+      console.warn('[FileSyncService] Failed to write to local file handle (saved in memory, marked as modified):', err);
       this.isModified = true;
-      throw err;
+      if (this.dbService) {
+        this.dbService.isModified = true;
+      }
+      return false;
     }
   }
 
@@ -101,10 +117,11 @@ class FileSyncService {
                 'application/octet-stream': ['.db', '.sqlite', '.sqlite3']
               }
             }],
-            excludeAcceptAllOption: false,
             multiple: false
           });
-          handle = handles ? handles[0] : null;
+          if (handles && handles.length > 0) {
+            handle = handles[0];
+          }
         } catch (pickerErr) {
           if (pickerErr.name === 'AbortError') {
             if (callbacks.onCancel) callbacks.onCancel();
@@ -117,6 +134,21 @@ class FileSyncService {
         if (handle) {
           try {
             if (callbacks.onStart) callbacks.onStart(handle.name);
+
+            // 書き込み権限の事前確認・要求（ユーザー操作直後のためプロンプト表示可能）
+            if (typeof handle.requestPermission === 'function') {
+              try {
+                const queryStatus = typeof handle.queryPermission === 'function'
+                  ? await handle.queryPermission({ mode: 'readwrite' })
+                  : 'prompt';
+                if (queryStatus !== 'granted') {
+                  await handle.requestPermission({ mode: 'readwrite' });
+                }
+              } catch (permErr) {
+                console.warn('[FileSyncService] Initial permission request warning:', permErr);
+              }
+            }
+
             const file = await handle.getFile();
             const arrayBuffer = await file.arrayBuffer();
 
@@ -285,14 +317,24 @@ class FileSyncService {
 
     if (this.fileHandle && this.fileName) {
       nameEl.textContent = this.fileName;
-      badgeEl.className = 'sync-badge sync-success';
-      badgeEl.textContent = '🟢 自動同期中';
-      if (iconEl) iconEl.textContent = '🗄️';
+      if (this.isModified) {
+        badgeEl.className = 'sync-badge sync-warning';
+        badgeEl.textContent = '⚠️ 未同期の変更あり';
+        if (iconEl) iconEl.textContent = '💾';
+        const timeStr = this.lastSavedAt
+          ? this.lastSavedAt.toLocaleTimeString()
+          : '未保存';
+        detailsEl.innerHTML = `前回保存: <b>${timeStr}</b>（実ファイルへ保存するには「💾 実ファイルに保存 (同期)」を押してください）`;
+      } else {
+        badgeEl.className = 'sync-badge sync-success';
+        badgeEl.textContent = '🟢 自動同期中';
+        if (iconEl) iconEl.textContent = '🗄️';
 
-      const timeStr = this.lastSavedAt
-        ? this.lastSavedAt.toLocaleTimeString()
-        : '保存済み';
-      detailsEl.innerHTML = `最終保存: <b>${timeStr}</b>（PC上の実ファイルが直接自動更新されています）`;
+        const timeStr = this.lastSavedAt
+          ? this.lastSavedAt.toLocaleTimeString()
+          : '保存済み';
+        detailsEl.innerHTML = `最終保存: <b>${timeStr}</b>（PC上の実ファイルが直接自動更新されています）`;
+      }
     } else {
       nameEl.textContent = '未接続 (メモリ動作中)';
       badgeEl.className = 'sync-badge sync-warning';

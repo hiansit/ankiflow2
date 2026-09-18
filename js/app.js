@@ -823,6 +823,22 @@ class App {
 
   async saveAsLocalFilePicker() {
     if (!this.fileSyncService) return;
+
+    // すでに実ファイルハンドルがあり未同期変更がある場合は、まず直接同期（権限再承認含む）を試みる
+    if (this.fileSyncService.fileHandle && this.fileSyncService.isModified) {
+      this.showToast(`実ファイル「${this.fileSyncService.fileName}」へ保存中...`);
+      try {
+        const ok = await this.fileSyncService.saveToFileHandle();
+        if (ok) {
+          this.updateFileSyncUI();
+          this.showToast(`実ファイル「${this.fileSyncService.fileName}」に最新の変更を保存しました！`, 'success');
+          return;
+        }
+      } catch (e) {
+        console.warn('Direct sync retry error:', e);
+      }
+    }
+
     await this.fileSyncService.saveAsLocalFilePicker({
       onStart: (name) => this.showToast(`「${name}」に保存中...`),
       onSuccess: async (handle) => {

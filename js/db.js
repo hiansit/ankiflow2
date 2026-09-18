@@ -1648,6 +1648,17 @@ class DBService {
     }
 
     try {
+      if (typeof this.fileHandle.queryPermission === 'function') {
+        const queryStatus = await this.fileHandle.queryPermission({ mode: 'readwrite' });
+        if (queryStatus !== 'granted' && typeof this.fileHandle.requestPermission === 'function') {
+          try {
+            await this.fileHandle.requestPermission({ mode: 'readwrite' });
+          } catch (pErr) {
+            console.warn('[DBService] Permission request deferred:', pErr);
+          }
+        }
+      }
+
       const binary = this.exportBinary();
       const writable = await this.fileHandle.createWritable();
       await writable.write(binary);
@@ -1658,9 +1669,9 @@ class DBService {
       console.log(`[DBService] Successfully saved to local file: ${this.fileName} (${binary.length} bytes)`);
       return true;
     } catch (err) {
-      console.error('[DBService] Failed to write to local file handle:', err);
+      console.warn('[DBService] Failed to write to local file handle (saved in memory, marked as modified):', err);
       this.isModified = true;
-      throw err;
+      return false;
     }
   }
 
@@ -1687,6 +1698,20 @@ class DBService {
    */
   async openFromFileHandle(handle) {
     if (!handle) throw new Error('有効なファイルハンドルがありません。');
+
+    if (typeof handle.requestPermission === 'function') {
+      try {
+        const queryStatus = typeof handle.queryPermission === 'function'
+          ? await handle.queryPermission({ mode: 'readwrite' })
+          : 'prompt';
+        if (queryStatus !== 'granted') {
+          await handle.requestPermission({ mode: 'readwrite' });
+        }
+      } catch (e) {
+        console.warn('[DBService] openFromFileHandle permission warning:', e);
+      }
+    }
+
     const file = await handle.getFile();
     const arrayBuffer = await file.arrayBuffer();
 
