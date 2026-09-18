@@ -487,6 +487,7 @@ class App {
       btnRestart.addEventListener('click', () => {
         document.getElementById('study-complete-area').style.display = 'none';
         document.getElementById('study-setup-area').style.display = 'block';
+        this.refreshStudySetupForm();
       });
     }
   }

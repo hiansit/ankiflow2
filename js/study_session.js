@@ -657,6 +657,7 @@ class StudySessionManager {
       if (this.app && typeof this.app.showToast === 'function') {
         this.app.showToast('学習セッションを中止しました。', 'info');
       }
+      this.refreshSetupForm();
       return;
     }
 
@@ -670,6 +671,9 @@ class StudySessionManager {
     const timeEl = this.getEl('summary-avg-time');
     if (countEl) countEl.textContent = totalCount;
     if (timeEl) timeEl.textContent = avgTime + 's';
+
+    // 学習セッション完了時にセットアップ画面のランク別件数・ピル表示を最新DBデータへ更新
+    this.refreshSetupForm();
 
     if (this.app) {
       if (typeof this.app.renderDashboard === 'function') {

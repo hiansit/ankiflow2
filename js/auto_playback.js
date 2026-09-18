@@ -435,6 +435,11 @@ class AutoPlaybackManager {
     const setupArea = this.getEl('study-setup-area');
     if (setupArea) setupArea.style.display = 'block';
 
+    // 自動連続再生終了時にセットアップ画面のランク集計・ピル表示を更新
+    if (this.studySessionManager && typeof this.studySessionManager.refreshSetupForm === 'function') {
+      this.studySessionManager.refreshSetupForm();
+    }
+
     if (this.app) {
       if (typeof this.app.showToast === 'function') {
         this.app.showToast(msg, 'info');
