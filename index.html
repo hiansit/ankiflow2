@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>汎用記憶定着・項目別ランク学習管理システム</title>
-  <link rel="stylesheet" href="css/style.css?v=20260905_17">
+  <link rel="stylesheet" href="css/style.css?v=20261027_02">
   <!-- Google Fonts -->
 
 
@@ -339,16 +339,27 @@
           </p>
         </div>
 
-        <!-- 4. 出題件数 -->
-        <div style="margin-bottom: 1.5rem;">
-          <label for="study-count-select" style="display: block; font-weight: 600; margin-bottom: 0.4rem;">📊 出題件数:</label>
-          <select id="study-count-select" style="width: 100%; padding: 0.65rem; border-radius: 8px; border: 1px solid var(--border); font-size: 0.95rem;">
-            <option value="all">🎯 対象全件（範囲内の全項目を出題）</option>
-            <option value="10">10 項目（サクッと学習）</option>
-            <option value="15" selected>15 項目（おすすめ）</option>
-            <option value="30">30 項目（しっかり学習）</option>
-            <option value="50">50 項目</option>
-          </select>
+        <!-- 4. 出題件数 & 自動一時停止設定 -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 1.5rem;">
+          <div>
+            <label for="study-count-select" style="display: block; font-weight: 600; margin-bottom: 0.4rem;">📊 出題件数:</label>
+            <select id="study-count-select" style="width: 100%; padding: 0.65rem; border-radius: 8px; border: 1px solid var(--border); font-size: 0.95rem;">
+              <option value="all">🎯 対象全件（範囲内の全項目）</option>
+              <option value="10">10 項目（サクッと学習）</option>
+              <option value="15" selected>15 項目（おすすめ）</option>
+              <option value="30">30 項目（しっかり学習）</option>
+              <option value="50">50 項目</option>
+            </select>
+          </div>
+          <div>
+            <label for="setup-auto-pause-select" style="display: block; font-weight: 600; margin-bottom: 0.4rem;">⏱️ 自動一時停止（放置ガード）:</label>
+            <select id="setup-auto-pause-select" style="width: 100%; padding: 0.65rem; border-radius: 8px; border: 1px solid var(--border); font-size: 0.95rem;">
+              <option value="30">30秒 無操作で停止</option>
+              <option value="60" selected>60秒 無操作で停止 (標準)</option>
+              <option value="180">180秒 (3分) 無操作で停止</option>
+              <option value="0">OFF (自動停止しない)</option>
+            </select>
+          </div>
         </div>
 
         <button id="btn-start-custom-study" class="btn btn-primary btn-lg" style="width: 100%; font-size: 1.05rem; padding: 0.75rem;">学習を開始する</button>
@@ -356,11 +367,12 @@
 
       <!-- アクティブ学習画面 -->
       <div id="study-active-area" class="study-card-wrapper" style="display: none;">
-        <div class="study-progress-header">
+        <div class="study-progress-header" style="flex-wrap: wrap; gap: 0.5rem;">
           <span id="study-progress-text" style="font-weight: 700; color: var(--text-muted);">1 / 15</span>
           
           <!-- セッション制御ボタン（通常学習） -->
           <div id="normal-study-controls" style="display: flex; align-items: center; gap: 0.4rem;">
+            <button id="btn-undo-study" class="btn btn-secondary" style="padding: 0.35rem 0.65rem; font-size: 0.85rem; opacity: 0.45;" title="直前の評価を取り消して前の問題に戻る [Backspace / Z]" disabled>↩️ 前に戻る</button>
             <button id="btn-pause-study" class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;" title="タイマーを一時停止 [P]">⏸️ 一時停止</button>
             <button id="btn-quit-study" class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;" title="ここまでの学習を保存してセッションを終了 [Esc]">⏹️ 終了</button>
           </div>
@@ -375,8 +387,8 @@
             <button id="btn-auto-play-stop" class="btn btn-secondary" style="padding: 0.2rem 0.45rem; font-size: 0.78rem;" title="自動再生を終了 [Esc]">⏹️</button>
           </div>
 
-          <!-- 音声読み上げコントロール -->
-          <div class="study-tts-controls" style="display: flex; align-items: center; gap: 0.75rem; font-size: 0.85rem;">
+          <!-- 音声読み上げ・自動一時停止コントロール -->
+          <div class="study-tts-controls" style="display: flex; align-items: center; gap: 0.6rem; font-size: 0.85rem; flex-wrap: wrap;">
             <label id="label-auto-speak" style="display: flex; align-items: center; gap: 0.35rem; cursor: pointer; color: var(--text-muted); font-weight: 600; white-space: nowrap;">
               <input type="checkbox" id="check-auto-speak">
               <span>🔊 自動発音</span>
@@ -385,6 +397,12 @@
               <option value="0.8">0.8x (遅い)</option>
               <option value="1.0" selected>1.0x (標準)</option>
               <option value="1.2">1.2x (速い)</option>
+            </select>
+            <select id="select-auto-pause-timeout" style="padding: 0.2rem 0.4rem; border-radius: 4px; border: 1px solid var(--border); font-size: 0.8rem;" title="無操作時の自動一時停止までの時間">
+              <option value="30">⏱️ 停止:30秒</option>
+              <option value="60" selected>⏱️ 停止:60秒</option>
+              <option value="180">⏱️ 停止:3分</option>
+              <option value="0">⏱️ 停止:OFF</option>
             </select>
           </div>
 
@@ -456,7 +474,7 @@
         <h2 style="margin-bottom: 0.5rem;">学習セッション完了！</h2>
         <p style="color: var(--text-muted); margin-bottom: 1.5rem;">お疲れ様でした。今回の学習データは即座にデータベースに記録されました。</p>
 
-        <div style="display: flex; justify-content: center; gap: 2rem; margin-bottom: 2rem;">
+        <div style="display: flex; justify-content: center; gap: 2rem; margin-bottom: 1.25rem;">
           <div>
             <div style="font-size: 0.85rem; color: var(--text-muted);">学習項目数</div>
             <div id="summary-total-count" style="font-size: 1.75rem; font-weight: 800;">0</div>
@@ -467,17 +485,37 @@
           </div>
         </div>
 
-        <button id="btn-restart-study" class="btn btn-primary btn-lg">続けて学習する</button>
+        <!-- 今回の評価ランク別内訳表示エリア -->
+        <div id="summary-rank-breakdown" style="margin-bottom: 1.75rem; display: none;"></div>
+
+        <div style="display: flex; justify-content: center; gap: 1rem; flex-wrap: wrap;">
+          <button id="btn-retry-weak-study" class="btn btn-primary btn-lg" style="display: none; background: linear-gradient(135deg, #f59e0b, #ef4444); border: none;">
+            🔥 今回覚えきれなかった項目を今すぐ再テスト
+          </button>
+          <button id="btn-restart-study" class="btn btn-primary btn-lg">続けて学習する</button>
+        </div>
       </div>
     </section>
 
     <!-- 3. 教材一覧・ランク管理タブ -->
     <section id="tab-materials" class="tab-content">
-      <div class="table-controls">
+      <div class="table-controls" style="align-items: center;">
         <input type="text" id="material-search" class="search-input" placeholder="🔍 問題・読み・回答で検索...">
         <select id="material-rank-filter" style="padding: 0.6rem 1rem; border-radius: 8px; border: 1px solid var(--border);">
           <option value="">すべてのランク</option>
         </select>
+        <div style="display: flex; align-items: center; gap: 0.75rem; margin-left: auto; flex-wrap: wrap;">
+          <span id="materials-count-summary" style="font-size: 0.85rem; font-weight: 600; color: var(--text-muted); white-space: nowrap;">読み込み中...</span>
+          <label style="display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--text-muted); white-space: nowrap;">
+            <span>表示:</span>
+            <select id="materials-page-size" style="padding: 0.45rem 0.6rem; border-radius: 6px; border: 1px solid var(--border); font-size: 0.85rem;">
+              <option value="50">50件 / 頁</option>
+              <option value="100" selected>100件 / 頁</option>
+              <option value="200">200件 / 頁</option>
+              <option value="all">全件表示</option>
+            </select>
+          </label>
+        </div>
       </div>
 
       <div class="table-wrapper">
@@ -497,6 +535,8 @@
           </tbody>
         </table>
       </div>
+      <!-- ページネーションコントロールバー -->
+      <div id="materials-pagination-bar" style="display: none; justify-content: center; align-items: center; margin-top: 1rem; padding: 0.75rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);"></div>
     </section>
 
     <!-- 4. 学習履歴ログタブ -->
@@ -743,16 +783,16 @@
   <!-- sql.js Wasm Library -->
   <script src="lib/sql-wasm.js"></script>
   <!-- ChineseTTS & SpeechService Library -->
-  <script src="chinese_tts_package/chinese-tts.js?v=20260911_01"></script>
-  <script src="js/speech.js?v=20260911_01"></script>
+  <script src="chinese_tts_package/chinese-tts.js?v=20261027_02"></script>
+  <script src="js/speech.js?v=20261027_02"></script>
   <!-- App Scripts -->
-  <script src="js/file_sync.js?v=20260911_01"></script>
-  <script src="js/auto_playback.js?v=20260911_01"></script>
-  <script src="js/study_session.js?v=20260911_01"></script>
-  <script src="js/material_manager.js?v=20260911_01"></script>
-  <script src="js/ui_views.js?v=20260911_01"></script>
-  <script src="js/db.js?v=20260911_01"></script>
-  <script src="js/app.js?v=20260911_01"></script>
+  <script src="js/file_sync.js?v=20261027_02"></script>
+  <script src="js/auto_playback.js?v=20261027_02"></script>
+  <script src="js/study_session.js?v=20261027_02"></script>
+  <script src="js/material_manager.js?v=20261027_02"></script>
+  <script src="js/ui_views.js?v=20261027_02"></script>
+  <script src="js/db.js?v=20261027_02"></script>
+  <script src="js/app.js?v=20261027_02"></script>
 </body>
 
 </html>

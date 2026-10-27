@@ -107,15 +107,31 @@ class DBService {
       await this.seedChineseTop50Sample();
     }
 
-    this.fileHandle = null;
+    this.setFileHandle(null);
     this.fileName = 'デモ版 (一時メモリ動作)';
-    this.lastSavedAt = null;
-    this.isModified = false;
+    if (this.fileSync) {
+      this.fileSync.fileName = this.fileName;
+    }
     return this.db;
   }
 
-
-
+  /**
+   * トランザクション内で処理を実行するヘルパー
+   */
+  runInTransaction(workFn) {
+    if (!this.db) throw new Error('データベースが開かれていません。');
+    this.db.run('BEGIN TRANSACTION;');
+    try {
+      const result = workFn();
+      this.db.run('COMMIT;');
+      return result;
+    } catch (err) {
+      try {
+        this.db.run('ROLLBACK;');
+      } catch (rbErr) {}
+      throw err;
+    }
+  }
 
   /**
    * スキーマ作成と初期データ投入
@@ -173,24 +189,25 @@ class DBService {
         answer_lang TEXT DEFAULT 'auto',
         prompt_speech_column TEXT DEFAULT NULL,
         answer_speech_column TEXT DEFAULT NULL,
+        default_scale_id TEXT DEFAULT 'simple_3',
         total_items INTEGER DEFAULT 0,
         created_at TEXT NOT NULL
       );
     `);
 
-    // カラムマイグレーション（prompt_lang, answer_lang, prompt_speech_column, answer_speech_column）
-    try {
-      this.db.run("ALTER TABLE MATERIALS_CATALOG ADD COLUMN prompt_lang TEXT DEFAULT 'auto';");
-    } catch (e) {}
-    try {
-      this.db.run("ALTER TABLE MATERIALS_CATALOG ADD COLUMN answer_lang TEXT DEFAULT 'auto';");
-    } catch (e) {}
-    try {
-      this.db.run("ALTER TABLE MATERIALS_CATALOG ADD COLUMN prompt_speech_column TEXT DEFAULT NULL;");
-    } catch (e) {}
-    try {
-      this.db.run("ALTER TABLE MATERIALS_CATALOG ADD COLUMN answer_speech_column TEXT DEFAULT NULL;");
-    } catch (e) {}
+    // カラムマイグレーション（既存DB互換用）
+    const migrationCols = [
+      "prompt_lang TEXT DEFAULT 'auto'",
+      "answer_lang TEXT DEFAULT 'auto'",
+      "prompt_speech_column TEXT DEFAULT NULL",
+      "answer_speech_column TEXT DEFAULT NULL",
+      "default_scale_id TEXT DEFAULT 'simple_3'"
+    ];
+    for (const colDef of migrationCols) {
+      try {
+        this.db.run(`ALTER TABLE MATERIALS_CATALOG ADD COLUMN ${colDef};`);
+      } catch (e) {}
+    }
 
     // 評価スケールマスタ（評価システムの基盤マスタのみ投入）
     const scalesCount = this.queryOne('SELECT COUNT(*) as count FROM RANK_SCALES');
@@ -269,7 +286,7 @@ class DBService {
    * 登録されている教材一覧を取得（純粋なカタログ参照）
    */
   getMaterialsList() {
-    let rows = this.query('SELECT * FROM MATERIALS_CATALOG ORDER BY catalog_id ASC');
+    const rows = this.query('SELECT * FROM MATERIALS_CATALOG ORDER BY catalog_id ASC');
     if (!rows) return [];
 
     // 各教材の実テーブルの最新件数を同期
@@ -283,8 +300,6 @@ class DBService {
     }
     return rows;
   }
-
-
 
   /**
    * 指定教材のメタデータを取得
@@ -336,12 +351,10 @@ class DBService {
     promptSpeechColumn = null,
     answerSpeechColumn = null
   }) {
-
     if (!materialType || !displayName || !csvText) {
       throw new Error('教材ID、表示名、CSVデータは必須です。');
     }
 
-    // テーブル名・IDサニタイズ（半角英数字とアンダースコアのみ、先頭数字時はm_自動補完）
     const safeMaterialType = this.sanitizeMaterialType(materialType);
     if (!safeMaterialType) {
       throw new Error('有効な教材識別子を入力してください（半角英数推奨）。');
@@ -358,8 +371,8 @@ class DBService {
     }
 
     // ヘッダーカラム名のサニタイズ
-    const safeHeaders = headers.map((h, i) => h.trim().replace(/[^a-zA-Z0-9_]/g, '_') || `col_${i+1}`);
-    
+    const safeHeaders = headers.map((h, i) => h.trim().replace(/[^a-zA-Z0-9_]/g, '_') || `col_${i + 1}`);
+
     // id列の確認・決定
     let targetIdCol = idColumn;
     const hasExplicitId = safeHeaders.includes(idColumn);
@@ -378,30 +391,6 @@ class DBService {
     });
     createSql += colDefs.join(',\n') + '\n);';
 
-    // 既存テーブルがあれば削除して新規作成
-    this.db.run(`DROP TABLE IF EXISTS ${safeMaterialType};`);
-    this.db.run(createSql);
-
-    // データINSERT
-    const placeholders = safeHeaders.map(() => '?').join(', ');
-    const insertSql = `INSERT INTO ${safeMaterialType} (${safeHeaders.join(', ')}) VALUES (${placeholders});`;
-    const stmt = this.db.prepare(insertSql);
-
-    let insertedCount = 0;
-    for (let i = 1; i < lines.length; i++) {
-      const parts = this.parseCsvLine(lines[i]);
-      if (parts.length > 0 && parts.some(p => p.length > 0)) {
-        // カラム長調整
-        const rowVals = [];
-        for (let c = 0; c < safeHeaders.length; c++) {
-          rowVals.push(parts[c] !== undefined ? parts[c] : '');
-        }
-        stmt.run(rowVals);
-        insertedCount++;
-      }
-    }
-    stmt.free();
-
     // デフォルトのカラムマッピング推定（指定がなければ）
     let safePromptCol = promptColumn;
     let safeAnswerCol = answerColumn;
@@ -417,12 +406,37 @@ class DBService {
       safeHintCols = safeHeaders.filter(h => h !== targetIdCol && h !== safePromptCol && h !== safeAnswerCol).join(',');
     }
 
-    // カタログ登録
-    this.db.run(`
-      INSERT OR REPLACE INTO MATERIALS_CATALOG (
-        material_type, display_name, table_name, id_column, prompt_column, hint_columns, answer_column, prompt_lang, answer_lang, prompt_speech_column, answer_speech_column, total_items, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
-    `, [safeMaterialType, displayName, safeMaterialType, targetIdCol, safePromptCol, safeHintCols, safeAnswerCol, promptLang || 'auto', answerLang || 'auto', promptSpeechColumn || null, answerSpeechColumn || null, insertedCount]);
+    let insertedCount = 0;
+    this.runInTransaction(() => {
+      this.db.run(`DROP TABLE IF EXISTS ${safeMaterialType};`);
+      this.db.run(createSql);
+
+      const placeholders = safeHeaders.map(() => '?').join(', ');
+      const insertSql = `INSERT INTO ${safeMaterialType} (${safeHeaders.join(', ')}) VALUES (${placeholders});`;
+      const stmt = this.db.prepare(insertSql);
+
+      try {
+        for (let i = 1; i < lines.length; i++) {
+          const parts = this.parseCsvLine(lines[i]);
+          if (parts.length > 0 && parts.some(p => p.length > 0)) {
+            const rowVals = [];
+            for (let c = 0; c < safeHeaders.length; c++) {
+              rowVals.push(parts[c] !== undefined ? parts[c] : '');
+            }
+            stmt.run(rowVals);
+            insertedCount++;
+          }
+        }
+      } finally {
+        stmt.free();
+      }
+
+      this.db.run(`
+        INSERT OR REPLACE INTO MATERIALS_CATALOG (
+          material_type, display_name, table_name, id_column, prompt_column, hint_columns, answer_column, prompt_lang, answer_lang, prompt_speech_column, answer_speech_column, total_items, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+      `, [safeMaterialType, displayName, safeMaterialType, targetIdCol, safePromptCol, safeHintCols, safeAnswerCol, promptLang || 'auto', answerLang || 'auto', promptSpeechColumn || null, answerSpeechColumn || null, insertedCount]);
+    });
 
     await this.saveToStorage();
 
@@ -441,32 +455,29 @@ class DBService {
     };
   }
 
-
   /**
    * 教材の削除
    */
   async deleteMaterial(materialType) {
-    if (materialType === 'chinese_top50') {
-      // サンプル教材は削除可能だが、全削除を避けるため確認
-    }
+    this.runInTransaction(() => {
+      // 1. カタログ削除
+      this.db.run('DELETE FROM MATERIALS_CATALOG WHERE material_type = ?', [materialType]);
 
-    // 1. カタログ削除
-    this.db.run('DELETE FROM MATERIALS_CATALOG WHERE material_type = ?', [materialType]);
+      // 2. テーブル削除
+      try {
+        this.db.run(`DROP TABLE IF EXISTS ${materialType}`);
+      } catch (e) {
+        console.warn('Error dropping table:', e);
+      }
 
-    // 2. テーブル削除
-    try {
-      this.db.run(`DROP TABLE IF EXISTS ${materialType}`);
-    } catch (e) {
-      console.warn('Error dropping table:', e);
-    }
+      // 3. 進捗・学習ログ削除
+      this.db.run(`
+        DELETE FROM STUDY_LOGS 
+        WHERE progress_id IN (SELECT progress_id FROM ITEM_PROGRESS WHERE material_type = ?)
+      `, [materialType]);
 
-    // 3. 進捗・学習ログ削除
-    this.db.run(`
-      DELETE FROM STUDY_LOGS 
-      WHERE progress_id IN (SELECT progress_id FROM ITEM_PROGRESS WHERE material_type = ?)
-    `, [materialType]);
-
-    this.db.run('DELETE FROM ITEM_PROGRESS WHERE material_type = ?', [materialType]);
+      this.db.run('DELETE FROM ITEM_PROGRESS WHERE material_type = ?', [materialType]);
+    });
 
     await this.saveToStorage();
   }
@@ -480,7 +491,6 @@ class DBService {
       throw new Error(`教材「${materialType}」が見つかりません。`);
     }
 
-    // 1. カタログ情報
     const catalog = {
       material_type: meta.material_type,
       display_name: meta.display_name,
@@ -492,14 +502,12 @@ class DBService {
       prompt_lang: meta.prompt_lang || 'auto',
       answer_lang: meta.answer_lang || 'auto',
       prompt_speech_column: meta.prompt_speech_column || null,
-      answer_speech_column: meta.answer_speech_column || null
+      answer_speech_column: meta.answer_speech_column || null,
+      default_scale_id: meta.default_scale_id || 'simple_3'
     };
 
-
-    // 2. 教材全データ
     const items = this.query(`SELECT * FROM ${meta.table_name} ORDER BY ${meta.id_column || 'id'} ASC`);
 
-    // 3. 進捗データ
     const progressRows = this.query(`
       SELECT 
         p.material_item_id,
@@ -514,7 +522,6 @@ class DBService {
       WHERE p.material_type = ?
     `, [materialType]);
 
-    // 4. 学習履歴ログ
     const logsRows = this.query(`
       SELECT 
         p.material_item_id,
@@ -556,10 +563,9 @@ class DBService {
       throw new Error('教材データが空です。');
     }
 
-    // 1. テーブルDDL作成
     const firstItem = items[0];
     const itemCols = Object.keys(firstItem);
-    
+
     let createSql = `CREATE TABLE IF NOT EXISTS ${materialType} (\n`;
     const colDefs = itemCols.map(col => {
       if (col === idCol) {
@@ -569,109 +575,117 @@ class DBService {
     });
     createSql += colDefs.join(',\n') + '\n);';
 
-    // 既存テーブル削除＆作成
-    this.db.run(`DROP TABLE IF EXISTS ${materialType};`);
-    this.db.run(createSql);
+    this.runInTransaction(() => {
+      // 1. 既存テーブル削除＆作成
+      this.db.run(`DROP TABLE IF EXISTS ${materialType};`);
+      this.db.run(createSql);
 
-    // 2. アイテムINSERT
-    const placeholders = itemCols.map(() => '?').join(', ');
-    const insertSql = `INSERT INTO ${materialType} (${itemCols.join(', ')}) VALUES (${placeholders});`;
-    const stmt = this.db.prepare(insertSql);
-
-    for (const row of items) {
-      const vals = itemCols.map(c => row[c] !== undefined ? row[c] : null);
-      stmt.run(vals);
-    }
-    stmt.free();
-
-    // 3. カタログ登録
-    this.db.run(`
-      INSERT OR REPLACE INTO MATERIALS_CATALOG (
-        material_type, display_name, table_name, id_column, prompt_column, hint_columns, answer_column, prompt_lang, answer_lang, prompt_speech_column, answer_speech_column, total_items, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      materialType,
-      displayName,
-      materialType,
-      idCol,
-      catalog.prompt_column || itemCols[1] || 'word',
-      catalog.hint_columns || '',
-      catalog.answer_column || itemCols[itemCols.length - 1] || 'meaning_ja',
-      catalog.prompt_lang || 'auto',
-      catalog.answer_lang || 'auto',
-      catalog.prompt_speech_column || null,
-      catalog.answer_speech_column || null,
-      items.length,
-      pkg.exported_at || this.formatDate(new Date())
-    ]);
-
-
-    // 4. 進捗データ削除＆復元
-    this.db.run('DELETE FROM ITEM_PROGRESS WHERE material_type = ?', [materialType]);
-    const progressIdMap = {}; // material_item_id -> progress_id
-
-    for (const prog of progress) {
-      let targetRankDefId = null;
-      if (prog.scale_id && prog.rank_level) {
-        const defRow = this.queryOne(`
-          SELECT rank_def_id FROM RANK_DEFINITIONS 
-          WHERE scale_id = ? AND rank_level = ?
-        `, [prog.scale_id, prog.rank_level]);
-        if (defRow) targetRankDefId = defRow.rank_def_id;
+      // 2. アイテムINSERT
+      const placeholders = itemCols.map(() => '?').join(', ');
+      const insertSql = `INSERT INTO ${materialType} (${itemCols.join(', ')}) VALUES (${placeholders});`;
+      const stmt = this.db.prepare(insertSql);
+      try {
+        for (const row of items) {
+          const vals = itemCols.map(c => row[c] !== undefined ? row[c] : null);
+          stmt.run(vals);
+        }
+      } finally {
+        stmt.free();
       }
 
+      // 3. カタログ登録
       this.db.run(`
-        INSERT INTO ITEM_PROGRESS (
-          material_type, material_item_id, current_rank_def_id,
-          total_attempts, consecutive_success, last_studied_at, next_review_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO MATERIALS_CATALOG (
+          material_type, display_name, table_name, id_column, prompt_column, hint_columns, answer_column, prompt_lang, answer_lang, prompt_speech_column, answer_speech_column, default_scale_id, total_items, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         materialType,
-        String(prog.material_item_id),
-        targetRankDefId,
-        prog.total_attempts || 0,
-        prog.consecutive_success || 0,
-        prog.last_studied_at || null,
-        prog.next_review_at || null
+        displayName,
+        materialType,
+        idCol,
+        catalog.prompt_column || itemCols[1] || 'word',
+        catalog.hint_columns || '',
+        catalog.answer_column || itemCols[itemCols.length - 1] || 'meaning_ja',
+        catalog.prompt_lang || 'auto',
+        catalog.answer_lang || 'auto',
+        catalog.prompt_speech_column || null,
+        catalog.answer_speech_column || null,
+        catalog.default_scale_id || 'simple_3',
+        items.length,
+        pkg.exported_at || this.formatDate(new Date())
       ]);
 
-      const lastIdRow = this.queryOne('SELECT last_insert_rowid() as id');
-      if (lastIdRow) {
-        progressIdMap[String(prog.material_item_id)] = lastIdRow.id;
-      }
-    }
+      // 4. 進捗データ削除＆復元
+      this.db.run(`
+        DELETE FROM STUDY_LOGS 
+        WHERE progress_id IN (SELECT progress_id FROM ITEM_PROGRESS WHERE material_type = ?)
+      `, [materialType]);
+      this.db.run('DELETE FROM ITEM_PROGRESS WHERE material_type = ?', [materialType]);
 
-    // 5. 学習履歴ログ復元
-    for (const log of logs) {
-      let progressId = progressIdMap[String(log.material_item_id)];
-      if (!progressId) {
-        // progressが存在しない場合のフォールバック作成
+      const progressIdMap = {}; // material_item_id -> progress_id
+
+      for (const prog of progress) {
+        let targetRankDefId = null;
+        if (prog.scale_id && prog.rank_level) {
+          const defRow = this.queryOne(`
+            SELECT rank_def_id FROM RANK_DEFINITIONS 
+            WHERE scale_id = ? AND rank_level = ?
+          `, [prog.scale_id, prog.rank_level]);
+          if (defRow) targetRankDefId = defRow.rank_def_id;
+        }
+
         this.db.run(`
           INSERT INTO ITEM_PROGRESS (
-            material_type, material_item_id, current_rank_def_id, total_attempts, consecutive_success, last_studied_at, next_review_at
-          ) VALUES (?, ?, NULL, 1, 0, ?, ?)
-        `, [materialType, String(log.material_item_id), log.studied_at, null]);
+            material_type, material_item_id, current_rank_def_id,
+            total_attempts, consecutive_success, last_studied_at, next_review_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `, [
+          materialType,
+          String(prog.material_item_id),
+          targetRankDefId,
+          prog.total_attempts || 0,
+          prog.consecutive_success || 0,
+          prog.last_studied_at || null,
+          prog.next_review_at || null
+        ]);
+
         const lastIdRow = this.queryOne('SELECT last_insert_rowid() as id');
-        progressId = lastIdRow.id;
-        progressIdMap[String(log.material_item_id)] = progressId;
+        if (lastIdRow) {
+          progressIdMap[String(prog.material_item_id)] = lastIdRow.id;
+        }
       }
 
-      let assessedRankDefId = null;
-      if (log.scale_id && log.rank_level) {
-        const defRow = this.queryOne(`
-          SELECT rank_def_id FROM RANK_DEFINITIONS 
-          WHERE scale_id = ? AND rank_level = ?
-        `, [log.scale_id, log.rank_level]);
-        if (defRow) assessedRankDefId = defRow.rank_def_id;
-      }
+      // 5. 学習履歴ログ復元
+      for (const log of logs) {
+        let progressId = progressIdMap[String(log.material_item_id)];
+        if (!progressId) {
+          this.db.run(`
+            INSERT INTO ITEM_PROGRESS (
+              material_type, material_item_id, current_rank_def_id, total_attempts, consecutive_success, last_studied_at, next_review_at
+            ) VALUES (?, ?, NULL, 1, 0, ?, ?)
+          `, [materialType, String(log.material_item_id), log.studied_at, null]);
+          const lastIdRow = this.queryOne('SELECT last_insert_rowid() as id');
+          progressId = lastIdRow.id;
+          progressIdMap[String(log.material_item_id)] = progressId;
+        }
 
-      if (assessedRankDefId && progressId) {
-        this.db.run(`
-          INSERT INTO STUDY_LOGS (progress_id, assessed_rank_def_id, time_spent_ms, studied_at)
-          VALUES (?, ?, ?, ?)
-        `, [progressId, assessedRankDefId, log.time_spent_ms || 0, log.studied_at]);
+        let assessedRankDefId = null;
+        if (log.scale_id && log.rank_level) {
+          const defRow = this.queryOne(`
+            SELECT rank_def_id FROM RANK_DEFINITIONS 
+            WHERE scale_id = ? AND rank_level = ?
+          `, [log.scale_id, log.rank_level]);
+          if (defRow) assessedRankDefId = defRow.rank_def_id;
+        }
+
+        if (assessedRankDefId && progressId) {
+          this.db.run(`
+            INSERT INTO STUDY_LOGS (progress_id, assessed_rank_def_id, time_spent_ms, studied_at)
+            VALUES (?, ?, ?, ?)
+          `, [progressId, assessedRankDefId, log.time_spent_ms || 0, log.studied_at]);
+        }
       }
-    }
+    });
 
     await this.saveToStorage();
 
@@ -751,18 +765,21 @@ class DBService {
           answer_speech_column = ?
       WHERE material_type = ?
     `);
-    stmt.run([
-      displayName,
-      promptColumn,
-      hintColumns,
-      answerColumn,
-      promptLang || 'auto',
-      answerLang || 'auto',
-      safePromptSpeechCol,
-      safeAnswerSpeechCol,
-      materialType
-    ]);
-    stmt.free();
+    try {
+      stmt.run([
+        displayName,
+        promptColumn,
+        hintColumns,
+        answerColumn,
+        promptLang || 'auto',
+        answerLang || 'auto',
+        safePromptSpeechCol,
+        safeAnswerSpeechCol,
+        materialType
+      ]);
+    } finally {
+      stmt.free();
+    }
 
     await this.saveToStorage();
 
@@ -794,48 +811,47 @@ class DBService {
     }
     const sourceMeta = this.getMaterialMetadata(sourceMaterialType);
 
-    // 新テーブルを作成して全データを複製
-    this.db.run(`DROP TABLE IF EXISTS ${safeNewType};`);
-    this.db.run(`CREATE TABLE ${safeNewType} AS SELECT * FROM ${sourceMeta.table_name};`);
+    this.runInTransaction(() => {
+      // 新テーブルを作成して全データを複製
+      this.db.run(`DROP TABLE IF EXISTS ${safeNewType};`);
+      this.db.run(`CREATE TABLE ${safeNewType} AS SELECT * FROM ${sourceMeta.table_name};`);
 
-    // 総件数取得
-    const countRow = this.queryOne(`SELECT COUNT(*) as cnt FROM ${safeNewType}`);
-    const totalItems = countRow ? countRow.cnt : 0;
+      // 総件数取得
+      const countRow = this.queryOne(`SELECT COUNT(*) as cnt FROM ${safeNewType}`);
+      const totalItems = countRow ? countRow.cnt : 0;
 
-    const finalPromptSpeechCol = promptSpeechColumn !== undefined 
-      ? (promptSpeechColumn && promptSpeechColumn.trim() !== '' ? promptSpeechColumn.trim() : null)
-      : (sourceMeta.prompt_speech_column || null);
-    const finalAnswerSpeechCol = answerSpeechColumn !== undefined 
-      ? (answerSpeechColumn && answerSpeechColumn.trim() !== '' ? answerSpeechColumn.trim() : null)
-      : (sourceMeta.answer_speech_column || null);
+      const finalPromptSpeechCol = promptSpeechColumn !== undefined
+        ? (promptSpeechColumn && promptSpeechColumn.trim() !== '' ? promptSpeechColumn.trim() : null)
+        : (sourceMeta.prompt_speech_column || null);
+      const finalAnswerSpeechCol = answerSpeechColumn !== undefined
+        ? (answerSpeechColumn && answerSpeechColumn.trim() !== '' ? answerSpeechColumn.trim() : null)
+        : (sourceMeta.answer_speech_column || null);
 
-    // カタログ登録
-    this.db.run(`
-      INSERT OR REPLACE INTO MATERIALS_CATALOG (
-        material_type, display_name, table_name, id_column, prompt_column, hint_columns, answer_column, prompt_lang, answer_lang, prompt_speech_column, answer_speech_column, total_items, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
-    `, [
-      safeNewType,
-      newDisplayName,
-      safeNewType,
-      sourceMeta.id_column || 'id',
-      promptColumn || sourceMeta.prompt_column,
-      hintColumns !== undefined ? hintColumns : sourceMeta.hint_columns,
-      answerColumn || sourceMeta.answer_column,
-      promptLang || sourceMeta.prompt_lang || 'auto',
-      answerLang || sourceMeta.answer_lang || 'auto',
-      finalPromptSpeechCol,
-      finalAnswerSpeechCol,
-      totalItems
-    ]);
+      // カタログ登録
+      this.db.run(`
+        INSERT OR REPLACE INTO MATERIALS_CATALOG (
+          material_type, display_name, table_name, id_column, prompt_column, hint_columns, answer_column, prompt_lang, answer_lang, prompt_speech_column, answer_speech_column, total_items, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+      `, [
+        safeNewType,
+        newDisplayName,
+        safeNewType,
+        sourceMeta.id_column || 'id',
+        promptColumn || sourceMeta.prompt_column,
+        hintColumns !== undefined ? hintColumns : sourceMeta.hint_columns,
+        answerColumn || sourceMeta.answer_column,
+        promptLang || sourceMeta.prompt_lang || 'auto',
+        answerLang || sourceMeta.answer_lang || 'auto',
+        finalPromptSpeechCol,
+        finalAnswerSpeechCol,
+        totalItems
+      ]);
+    });
 
     await this.saveToStorage();
 
     return this.getMaterialMetadata(safeNewType);
   }
-
-
-
 
   /**
    * 生のCSVテキストを教材テーブルに直接投入
@@ -844,18 +860,23 @@ class DBService {
     const lines = csvText.split(/\r?\n/).filter(line => line.trim().length > 0);
     if (lines.length < 2) return;
 
-    const stmt = this.db.prepare(`INSERT OR REPLACE INTO ${tableName} (id, word, zhuyin, pinyin, meaning_ja) VALUES (?, ?, ?, ?, ?)`);
-    for (let i = 1; i < lines.length; i++) {
-      const parts = this.parseCsvLine(lines[i]);
-      if (parts.length >= 5) {
-        stmt.run([parseInt(parts[0], 10), parts[1], parts[2], parts[3], parts[4]]);
+    this.runInTransaction(() => {
+      const stmt = this.db.prepare(`INSERT OR REPLACE INTO ${tableName} (id, word, zhuyin, pinyin, meaning_ja) VALUES (?, ?, ?, ?, ?)`);
+      try {
+        for (let i = 1; i < lines.length; i++) {
+          const parts = this.parseCsvLine(lines[i]);
+          if (parts.length >= 5) {
+            stmt.run([parseInt(parts[0], 10), parts[1], parts[2], parts[3], parts[4]]);
+          }
+        }
+      } finally {
+        stmt.free();
       }
-    }
-    stmt.free();
+    });
   }
 
   /**
-   * 簡易CSV行パーサー（カンマ区切り、ダブルクォート対応）
+   * CSV行パーサー（カンマ区切り、ダブルクォートおよびRFC 4180 "" エスケープ対応）
    */
   parseCsvLine(text) {
     const result = [];
@@ -864,7 +885,12 @@ class DBService {
     for (let i = 0; i < text.length; i++) {
       const char = text[i];
       if (char === '"') {
-        inQuotes = !inQuotes;
+        if (inQuotes && text[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
       } else if (char === ',' && !inQuotes) {
         result.push(cur.trim());
         cur = '';
@@ -882,15 +908,18 @@ class DBService {
   query(sql, params = []) {
     if (!this.db) return [];
     const stmt = this.db.prepare(sql);
-    if (params && params.length > 0) {
-      stmt.bind(params);
+    try {
+      if (params && params.length > 0) {
+        stmt.bind(params);
+      }
+      const rows = [];
+      while (stmt.step()) {
+        rows.push(stmt.getAsObject());
+      }
+      return rows;
+    } finally {
+      stmt.free();
     }
-    const rows = [];
-    while (stmt.step()) {
-      rows.push(stmt.getAsObject());
-    }
-    stmt.free();
-    return rows;
   }
 
   /**
@@ -909,7 +938,6 @@ class DBService {
     if (!this.db) return;
     this.db.run(sql, params);
   }
-
 
   /**
    * スケール一覧を取得
@@ -935,9 +963,90 @@ class DBService {
   }
 
   /**
-   * 教材項目と学習進捗を結合して全件取得（動的カラム対応）
+   * 教材ごとのデフォルト評価スケールを保存・更新
    */
-  getItemsWithProgress(materialType = 'chinese_top50', filter = {}) {
+  async setMaterialDefaultScale(materialType, scaleId) {
+    if (!this.db || !materialType || !scaleId) return;
+    this.db.run(
+      'UPDATE MATERIALS_CATALOG SET default_scale_id = ? WHERE material_type = ?',
+      [scaleId, materialType]
+    );
+    await this.saveToStorage();
+  }
+
+  /**
+   * 任意の rank_def_id を指定スケール (targetScaleId) 上の対応するランク定義へマッピング
+   * 3段階評価 (simple_3) ⇔ 5段階評価 (detailed_5) の切り替え時もランク表示・集計を連動させる
+   */
+  mapRankDefToScale(sourceRankDefId, targetScaleId = 'simple_3') {
+    if (sourceRankDefId === null || sourceRankDefId === undefined || sourceRankDefId === '' || sourceRankDefId === 'unstudied') {
+      return null;
+    }
+    const defIdNum = parseInt(sourceRankDefId, 10);
+    if (isNaN(defIdNum)) return null;
+
+    const allDefs = this.query('SELECT * FROM RANK_DEFINITIONS ORDER BY scale_id, rank_level ASC');
+    const srcDef = allDefs.find(d => d.rank_def_id === defIdNum);
+    if (!srcDef) return null;
+
+    if (srcDef.scale_id === targetScaleId) {
+      return srcDef;
+    }
+
+    const dstDefs = allDefs.filter(d => d.scale_id === targetScaleId);
+    if (dstDefs.length === 0) return srcDef;
+
+    const srcDefs = allDefs.filter(d => d.scale_id === srcDef.scale_id);
+    const srcMax = srcDefs.length > 0 ? srcDefs[srcDefs.length - 1].rank_level : 3;
+    const dstMax = dstDefs[dstDefs.length - 1].rank_level;
+
+    let mappedLevel = 1;
+    // 3段階 (simple_3) ⇔ 5段階 (detailed_5) の明示的マッピング（定着率判定と完全整合）
+    if (srcDef.scale_id === 'simple_3' && targetScaleId === 'detailed_5') {
+      if (srcDef.rank_level === 1) mappedLevel = 1;      // 全然ダメ -> 初見/不可 (Lv1)
+      else if (srcDef.rank_level === 2) mappedLevel = 3; // まだまだ -> 遅い/要復習 (Lv3)
+      else mappedLevel = 5;                              // 完璧 -> 完全定着 (Lv5)
+    } else if (srcDef.scale_id === 'detailed_5' && targetScaleId === 'simple_3') {
+      if (srcDef.rank_level <= 1) mappedLevel = 1;       // 初見/不可 (Lv1) -> 全然ダメ (Lv1)
+      else if (srcDef.rank_level <= 3) mappedLevel = 2;  // ヒント要 (Lv2), 遅い/要復習 (Lv3) -> まだまだ (Lv2)
+      else mappedLevel = 3;                              // 即答 (Lv4), 完全定着 (Lv5) -> 完璧 (Lv3)
+    } else {
+      const ratio = srcMax > 1 ? (srcDef.rank_level - 1) / (srcMax - 1) : 1;
+      mappedLevel = Math.round(1 + ratio * (dstMax - 1));
+    }
+
+    return dstDefs.find(d => d.rank_level === mappedLevel) || dstDefs[dstDefs.length - 1];
+  }
+
+  /**
+   * 指定された targetRankDefId と（そのスケール基準で）同等とみなされる全スケールの rank_def_id リストを返す
+   */
+  getEquivalentRankDefIds(targetRankDefId) {
+    const defIdNum = parseInt(targetRankDefId, 10);
+    if (isNaN(defIdNum)) return [];
+
+    const allDefs = this.query('SELECT * FROM RANK_DEFINITIONS ORDER BY scale_id, rank_level ASC');
+    const targetDef = allDefs.find(d => d.rank_def_id === defIdNum);
+    if (!targetDef) return [defIdNum];
+
+    const targetScaleId = targetDef.scale_id;
+    const equivIds = new Set([defIdNum]);
+
+    for (const d of allDefs) {
+      if (d.scale_id === targetScaleId) continue;
+      const mapped = this.mapRankDefToScale(d.rank_def_id, targetScaleId);
+      if (mapped && mapped.rank_def_id === defIdNum) {
+        equivIds.add(d.rank_def_id);
+      }
+    }
+
+    return Array.from(equivIds);
+  }
+
+  /**
+   * 教材項目と学習進捗を結合して全件取得（動的カラム・スケール間マッピング対応）
+   */
+  getItemsWithProgress(materialType = 'chinese_top50', filter = {}, scaleId = null) {
     const meta = this.getMaterialMetadata(materialType);
     const idCol = meta.id_column || 'id';
     const promptCol = meta.prompt_column || 'word';
@@ -962,12 +1071,12 @@ class DBService {
         rd.rank_label,
         rd.color_code
       FROM ${meta.table_name} m
-      LEFT JOIN ITEM_PROGRESS p ON p.material_type = '${materialType}' AND p.material_item_id = CAST(m.${idCol} AS TEXT)
+      LEFT JOIN ITEM_PROGRESS p ON p.material_type = ? AND p.material_item_id = CAST(m.${idCol} AS TEXT)
       LEFT JOIN RANK_DEFINITIONS rd ON p.current_rank_def_id = rd.rank_def_id
       WHERE 1=1
     `;
 
-    const params = [];
+    const params = [materialType];
 
     if (filter.search) {
       const searchFields = [promptCol, answerCol, ...hintCols].map(c => `m.${c} LIKE ?`).join(' OR ');
@@ -982,17 +1091,98 @@ class DBService {
       if (filter.rankDefId === 'unstudied') {
         sql += ` AND (p.current_rank_def_id IS NULL)`;
       } else {
-        sql += ` AND (p.current_rank_def_id = ?)`;
-        params.push(parseInt(filter.rankDefId, 10));
+        const equivIds = this.getEquivalentRankDefIds(filter.rankDefId);
+        if (equivIds.length > 1) {
+          sql += ` AND p.current_rank_def_id IN (${equivIds.map(() => '?').join(', ')})`;
+          params.push(...equivIds);
+        } else {
+          sql += ` AND (p.current_rank_def_id = ?)`;
+          params.push(parseInt(filter.rankDefId, 10));
+        }
       }
     }
 
     sql += ` ORDER BY m.${idCol} ASC`;
-    return this.query(sql, params);
+    const rows = this.query(sql, params);
+
+    // スケール指定時は、別スケールで記録されたランクも指定スケールへマッピングした情報を補完
+    if (scaleId) {
+      rows.forEach(r => {
+        if (r.current_rank_def_id && r.scale_id && r.scale_id !== scaleId) {
+          const mapped = this.mapRankDefToScale(r.current_rank_def_id, scaleId);
+          if (mapped) {
+            r.mapped_rank_def_id = mapped.rank_def_id;
+            r.mapped_rank_level = mapped.rank_level;
+            r.mapped_rank_label = mapped.rank_label;
+            r.mapped_color_code = mapped.color_code;
+          }
+        }
+      });
+    }
+
+    return rows;
+  }
+
+  /**
+   * 学習キュー・件数集計用の範囲＆ランク条件ビルダ（内部共通ヘルパー）
+   */
+  _buildRangeAndRankFilter(idCol, optionsOrRankDefId = null, mode = '') {
+    let options = {};
+    if (optionsOrRankDefId !== null && optionsOrRankDefId !== undefined) {
+      if (typeof optionsOrRankDefId === 'object') {
+        options = optionsOrRankDefId;
+      } else {
+        options = { rankDefId: optionsOrRankDefId };
+      }
+    }
+
+    const startId = options.startId !== undefined && options.startId !== '' && options.startId !== null
+      ? parseInt(options.startId, 10)
+      : null;
+    const endId = options.endId !== undefined && options.endId !== '' && options.endId !== null
+      ? parseInt(options.endId, 10)
+      : null;
+    let rankDefId = options.rankDefId !== undefined && options.rankDefId !== '' && options.rankDefId !== null
+      ? options.rankDefId
+      : null;
+
+    if (mode === 'rank_filter' && !rankDefId && optionsOrRankDefId !== null && typeof optionsOrRankDefId !== 'object') {
+      rankDefId = optionsOrRankDefId;
+    }
+
+    const conditions = [];
+    const params = [];
+
+    if (startId !== null && !isNaN(startId)) {
+      conditions.push(`CAST(m.${idCol} AS INTEGER) >= ?`);
+      params.push(startId);
+    }
+    if (endId !== null && !isNaN(endId)) {
+      conditions.push(`CAST(m.${idCol} AS INTEGER) <= ?`);
+      params.push(endId);
+    }
+    if (rankDefId !== null) {
+      if (rankDefId === 'unstudied') {
+        conditions.push(`p.current_rank_def_id IS NULL`);
+      } else {
+        const equivIds = this.getEquivalentRankDefIds(rankDefId);
+        if (equivIds.length > 1) {
+          conditions.push(`p.current_rank_def_id IN (${equivIds.map(() => '?').join(', ')})`);
+          params.push(...equivIds);
+        } else {
+          conditions.push(`p.current_rank_def_id = ?`);
+          params.push(parseInt(rankDefId, 10));
+        }
+      }
+    }
+
+    const whereSql = conditions.length > 0 ? ' AND ' + conditions.join(' AND ') : '';
+    return { whereSql, params };
   }
 
   /**
    * 指定した出題範囲（ID連番）内における各定着ランクの単語数を集計
+   * スケール切り替え時も別スケールのランクを現在スケールへマッピングして集計
    * @param {string} materialType
    * @param {string} scaleId
    * @param {Object} options - { startId, endId }
@@ -1013,42 +1203,32 @@ class DBService {
     if (!meta) return result;
     const idCol = meta.id_column || 'id';
 
-    const startId = options.startId !== undefined && options.startId !== '' && options.startId !== null ? parseInt(options.startId, 10) : null;
-    const endId = options.endId !== undefined && options.endId !== '' && options.endId !== null ? parseInt(options.endId, 10) : null;
-
-    const extraConditions = [];
-    const params = [];
-
-    if (startId !== null && !isNaN(startId)) {
-      extraConditions.push(`CAST(m.${idCol} AS INTEGER) >= ?`);
-      params.push(startId);
-    }
-    if (endId !== null && !isNaN(endId)) {
-      extraConditions.push(`CAST(m.${idCol} AS INTEGER) <= ?`);
-      params.push(endId);
-    }
-
-    const whereClause = extraConditions.length > 0 ? ' AND ' + extraConditions.join(' AND ') : '';
+    const { whereSql, params } = this._buildRangeAndRankFilter(idCol, {
+      startId: options.startId,
+      endId: options.endId
+    });
 
     const sql = `
       SELECT 
         p.current_rank_def_id,
         COUNT(*) as cnt
       FROM ${meta.table_name} m
-      LEFT JOIN ITEM_PROGRESS p ON p.material_type = '${materialType}' AND p.material_item_id = CAST(m.${idCol} AS TEXT)
-      WHERE 1=1 ${whereClause}
+      LEFT JOIN ITEM_PROGRESS p ON p.material_type = ? AND p.material_item_id = CAST(m.${idCol} AS TEXT)
+      WHERE 1=1 ${whereSql}
       GROUP BY p.current_rank_def_id
     `;
 
     try {
-      const rows = this.query(sql, params);
+      const rows = this.query(sql, [materialType, ...params]);
       rows.forEach(r => {
         const count = r.cnt || 0;
         result.total += count;
         if (r.current_rank_def_id === null || r.current_rank_def_id === undefined) {
           result.unstudied += count;
         } else {
-          result.byRankDefId[r.current_rank_def_id] = count;
+          const mappedDef = this.mapRankDefToScale(r.current_rank_def_id, scaleId);
+          const targetId = mappedDef ? mappedDef.rank_def_id : r.current_rank_def_id;
+          result.byRankDefId[targetId] = (result.byRankDefId[targetId] || 0) + count;
         }
       });
       return result;
@@ -1092,62 +1272,19 @@ class DBService {
     if (!meta) return 0;
     const idCol = meta.id_column || 'id';
 
-    let options = {};
-    if (optionsOrRankDefId !== null && optionsOrRankDefId !== undefined) {
-      if (typeof optionsOrRankDefId === 'object') {
-        options = optionsOrRankDefId;
-      } else {
-        options = { rankDefId: optionsOrRankDefId };
-      }
-    }
+    const { whereSql, params } = this._buildRangeAndRankFilter(idCol, optionsOrRankDefId, mode);
+    const joinType = (mode === 'maintenance') ? 'INNER JOIN' : 'LEFT JOIN';
 
-    const startId = options.startId !== undefined && options.startId !== '' && options.startId !== null ? parseInt(options.startId, 10) : null;
-    const endId = options.endId !== undefined && options.endId !== '' && options.endId !== null ? parseInt(options.endId, 10) : null;
-    const rankDefId = options.rankDefId !== undefined && options.rankDefId !== '' && options.rankDefId !== null ? options.rankDefId : null;
-
-    const extraConditions = [];
-    const params = [];
-
-    if (startId !== null && !isNaN(startId)) {
-      extraConditions.push(`CAST(m.${idCol} AS INTEGER) >= ?`);
-      params.push(startId);
-    }
-    if (endId !== null && !isNaN(endId)) {
-      extraConditions.push(`CAST(m.${idCol} AS INTEGER) <= ?`);
-      params.push(endId);
-    }
-    if (rankDefId !== null) {
-      if (rankDefId === 'unstudied') {
-        extraConditions.push(`p.current_rank_def_id IS NULL`);
-      } else {
-        extraConditions.push(`p.current_rank_def_id = ?`);
-        params.push(parseInt(rankDefId, 10));
-      }
-    }
-
-    const extraConditionsSql = extraConditions.length > 0 ? ' AND ' + extraConditions.join(' AND ') : '';
-
-    let sql = '';
-    if (mode === 'maintenance') {
-      sql = `
-        SELECT COUNT(*) as count
-        FROM ${meta.table_name} m
-        INNER JOIN ITEM_PROGRESS p ON p.material_type = '${materialType}' AND p.material_item_id = CAST(m.${idCol} AS TEXT)
-        INNER JOIN RANK_DEFINITIONS rd ON p.current_rank_def_id = rd.rank_def_id
-        WHERE 1=1 ${extraConditionsSql}
-      `;
-    } else {
-      sql = `
-        SELECT COUNT(*) as count
-        FROM ${meta.table_name} m
-        LEFT JOIN ITEM_PROGRESS p ON p.material_type = '${materialType}' AND p.material_item_id = CAST(m.${idCol} AS TEXT)
-        LEFT JOIN RANK_DEFINITIONS rd ON p.current_rank_def_id = rd.rank_def_id
-        WHERE 1=1 ${extraConditionsSql}
-      `;
-    }
+    const sql = `
+      SELECT COUNT(*) as count
+      FROM ${meta.table_name} m
+      ${joinType} ITEM_PROGRESS p ON p.material_type = ? AND p.material_item_id = CAST(m.${idCol} AS TEXT)
+      ${joinType} RANK_DEFINITIONS rd ON p.current_rank_def_id = rd.rank_def_id
+      WHERE 1=1 ${whereSql}
+    `;
 
     try {
-      const row = this.queryOne(sql, params);
+      const row = this.queryOne(sql, [materialType, ...params]);
       return row ? row.count : 0;
     } catch (e) {
       console.warn('[DBService] getStudyQueueCount error:', e);
@@ -1169,174 +1306,73 @@ class DBService {
     const promptCol = meta.prompt_column || 'word';
     const answerCol = meta.answer_column || 'meaning_ja';
 
-    let options = {};
-    if (optionsOrRankDefId !== null && optionsOrRankDefId !== undefined) {
-      if (typeof optionsOrRankDefId === 'object') {
-        options = optionsOrRankDefId;
-      } else {
-        options = { rankDefId: optionsOrRankDefId };
-      }
-    }
-
-    const startId = options.startId !== undefined && options.startId !== '' && options.startId !== null ? parseInt(options.startId, 10) : null;
-    const endId = options.endId !== undefined && options.endId !== '' && options.endId !== null ? parseInt(options.endId, 10) : null;
-    let rankDefId = options.rankDefId !== undefined && options.rankDefId !== '' && options.rankDefId !== null ? options.rankDefId : null;
-
-    // 後方互換性: mode === 'rank_filter' の場合の targetRankDefId
-    if (mode === 'rank_filter' && !rankDefId && optionsOrRankDefId !== null) {
-      rankDefId = optionsOrRankDefId;
-    }
-
-    const extraConditions = [];
-    const params = [];
-
-    if (startId !== null && !isNaN(startId)) {
-      extraConditions.push(`CAST(m.${idCol} AS INTEGER) >= ?`);
-      params.push(startId);
-    }
-    if (endId !== null && !isNaN(endId)) {
-      extraConditions.push(`CAST(m.${idCol} AS INTEGER) <= ?`);
-      params.push(endId);
-    }
-    if (rankDefId !== null) {
-      if (rankDefId === 'unstudied') {
-        extraConditions.push(`p.current_rank_def_id IS NULL`);
-      } else {
-        extraConditions.push(`p.current_rank_def_id = ?`);
-        params.push(parseInt(rankDefId, 10));
-      }
-    }
-
-    const extraConditionsSql = extraConditions.length > 0 ? ' AND ' + extraConditions.join(' AND ') : '';
+    const { whereSql, params: filterParams } = this._buildRangeAndRankFilter(idCol, optionsOrRankDefId, mode);
+    const queryParams = [materialType, ...filterParams];
 
     const isAllLimit = (limit === 0 || limit === 'all' || limit === -1 || limit === null || limit === undefined || parseInt(limit, 10) <= 0);
     const limitSql = isAllLimit ? '' : ' LIMIT ?';
     if (!isAllLimit) {
-      params.push(parseInt(limit, 10));
+      queryParams.push(parseInt(limit, 10));
     }
 
-    let items = [];
+    const joinType = (mode === 'maintenance') ? 'INNER JOIN' : 'LEFT JOIN';
 
+    let orderBySql = 'RANDOM()';
     if (mode === 'sequential' || mode === 'id_sequential') {
-      // 1. 連番・ID順学習モード（教材のID昇順通りに出題）
-      const sql = `
-        SELECT 
-          m.*,
-          m.${idCol} as item_id,
-          m.${promptCol} as display_prompt,
-          m.${answerCol} as display_answer,
-          p.progress_id,
-          p.current_rank_def_id,
-          p.total_attempts,
-          p.consecutive_success,
-          p.last_studied_at,
-          p.next_review_at,
-          rd.scale_id,
-          rd.rank_level,
-          rd.rank_label,
-          rd.color_code
-        FROM ${meta.table_name} m
-        LEFT JOIN ITEM_PROGRESS p ON p.material_type = '${materialType}' AND p.material_item_id = CAST(m.${idCol} AS TEXT)
-        LEFT JOIN RANK_DEFINITIONS rd ON p.current_rank_def_id = rd.rank_def_id
-        WHERE 1=1 ${extraConditionsSql}
-        ORDER BY CAST(m.${idCol} AS INTEGER) ASC
-        ${limitSql}
-      `;
-      items = this.query(sql, params);
-
+      orderBySql = `CAST(m.${idCol} AS INTEGER) ASC`;
     } else if (mode === 'unmastered_first') {
-      // 2. 未定着・苦手優先モード
-      const sql = `
-        SELECT 
-          m.*,
-          m.${idCol} as item_id,
-          m.${promptCol} as display_prompt,
-          m.${answerCol} as display_answer,
-          p.progress_id,
-          p.current_rank_def_id,
-          p.total_attempts,
-          p.consecutive_success,
-          p.last_studied_at,
-          p.next_review_at,
-          rd.scale_id,
-          rd.rank_level,
-          rd.rank_label,
-          rd.color_code,
-          CASE 
-            WHEN p.current_rank_def_id IS NULL THEN 0
-            ELSE rd.rank_level 
-          END as priority_rank
-        FROM ${meta.table_name} m
-        LEFT JOIN ITEM_PROGRESS p ON p.material_type = '${materialType}' AND p.material_item_id = CAST(m.${idCol} AS TEXT)
-        LEFT JOIN RANK_DEFINITIONS rd ON p.current_rank_def_id = rd.rank_def_id
-        WHERE 1=1 ${extraConditionsSql}
-        ORDER BY 
-          priority_rank ASC,
-          CASE WHEN p.next_review_at IS NOT NULL AND p.next_review_at <= datetime('now', 'localtime') THEN 0 ELSE 1 END ASC,
-          RANDOM()
-        ${limitSql}
+      orderBySql = `
+        CASE WHEN p.current_rank_def_id IS NULL THEN 0 ELSE rd.rank_level END ASC,
+        CASE WHEN p.next_review_at IS NOT NULL AND p.next_review_at <= datetime('now', 'localtime') THEN 0 ELSE 1 END ASC,
+        RANDOM()
       `;
-      items = this.query(sql, params);
-
     } else if (mode === 'maintenance') {
-      // 3. 記憶維持メンテナンスモード
-      const sql = `
-        SELECT 
-          m.*,
-          m.${idCol} as item_id,
-          m.${promptCol} as display_prompt,
-          m.${answerCol} as display_answer,
-          p.progress_id,
-          p.current_rank_def_id,
-          p.total_attempts,
-          p.consecutive_success,
-          p.last_studied_at,
-          p.next_review_at,
-          rd.scale_id,
-          rd.rank_level,
-          rd.rank_label,
-          rd.color_code
-        FROM ${meta.table_name} m
-        INNER JOIN ITEM_PROGRESS p ON p.material_type = '${materialType}' AND p.material_item_id = CAST(m.${idCol} AS TEXT)
-        INNER JOIN RANK_DEFINITIONS rd ON p.current_rank_def_id = rd.rank_def_id
-        WHERE 1=1 ${extraConditionsSql}
-        ORDER BY 
-          CASE WHEN p.next_review_at <= datetime('now', 'localtime') THEN 0 ELSE 1 END ASC,
-          p.next_review_at ASC,
-          RANDOM()
-        ${limitSql}
+      orderBySql = `
+        CASE WHEN p.next_review_at <= datetime('now', 'localtime') THEN 0 ELSE 1 END ASC,
+        p.next_review_at ASC,
+        RANDOM()
       `;
-      items = this.query(sql, params);
-
-    } else {
-      // 4. 全件シャッフルまたはその他
-      const sql = `
-        SELECT 
-          m.*,
-          m.${idCol} as item_id,
-          m.${promptCol} as display_prompt,
-          m.${answerCol} as display_answer,
-          p.progress_id,
-          p.current_rank_def_id,
-          p.total_attempts,
-          p.consecutive_success,
-          p.last_studied_at,
-          p.next_review_at,
-          rd.scale_id,
-          rd.rank_level,
-          rd.rank_label,
-          rd.color_code
-        FROM ${meta.table_name} m
-        LEFT JOIN ITEM_PROGRESS p ON p.material_type = '${materialType}' AND p.material_item_id = CAST(m.${idCol} AS TEXT)
-        LEFT JOIN RANK_DEFINITIONS rd ON p.current_rank_def_id = rd.rank_def_id
-        WHERE 1=1 ${extraConditionsSql}
-        ORDER BY RANDOM()
-        ${limitSql}
-      `;
-      items = this.query(sql, params);
     }
 
-    return items;
+    const sql = `
+      SELECT 
+        m.*,
+        m.${idCol} as item_id,
+        m.${promptCol} as display_prompt,
+        m.${answerCol} as display_answer,
+        p.progress_id,
+        p.current_rank_def_id,
+        p.total_attempts,
+        p.consecutive_success,
+        p.last_studied_at,
+        p.next_review_at,
+        rd.scale_id,
+        rd.rank_level,
+        rd.rank_label,
+        rd.color_code
+      FROM ${meta.table_name} m
+      ${joinType} ITEM_PROGRESS p ON p.material_type = ? AND p.material_item_id = CAST(m.${idCol} AS TEXT)
+      ${joinType} RANK_DEFINITIONS rd ON p.current_rank_def_id = rd.rank_def_id
+      WHERE 1=1 ${whereSql}
+      ORDER BY ${orderBySql}
+      ${limitSql}
+    `;
+
+    const rows = this.query(sql, queryParams);
+    if (scaleId) {
+      rows.forEach(r => {
+        if (r.current_rank_def_id && r.scale_id && r.scale_id !== scaleId) {
+          const mapped = this.mapRankDefToScale(r.current_rank_def_id, scaleId);
+          if (mapped) {
+            r.mapped_rank_def_id = mapped.rank_def_id;
+            r.mapped_rank_level = mapped.rank_level;
+            r.mapped_rank_label = mapped.rank_label;
+            r.mapped_color_code = mapped.color_code;
+          }
+        }
+      });
+    }
+    return rows;
   }
 
   /**
@@ -1356,12 +1392,15 @@ class DBService {
     const maxLevel = maxLevelRow ? maxLevelRow.max_level : 3;
     const isTopRank = (rankDef.rank_level === maxLevel);
 
-    let progress = this.queryOne(`
+    const progress = this.queryOne(`
       SELECT * FROM ITEM_PROGRESS 
       WHERE material_type = ? AND material_item_id = ?
     `, [materialType, itemIdStr]);
 
+    const prevProgressSnapshot = progress ? { ...progress } : null;
+
     let progressId;
+    let logId = null;
     let consecutiveSuccess = 0;
     let totalAttempts = 1;
 
@@ -1380,41 +1419,93 @@ class DBService {
     const nextReviewDate = new Date(now.getTime() + intervalDays * 24 * 60 * 60 * 1000);
     const nextReviewStr = this.formatDate(nextReviewDate);
 
-    if (progress) {
-      this.db.run(`
-        UPDATE ITEM_PROGRESS
-        SET current_rank_def_id = ?,
-            total_attempts = ?,
-            consecutive_success = ?,
-            last_studied_at = ?,
-            next_review_at = ?
-        WHERE progress_id = ?
-      `, [assessedRankDefId, totalAttempts, consecutiveSuccess, nowStr, nextReviewStr, progressId]);
-    } else {
-      this.db.run(`
-        INSERT INTO ITEM_PROGRESS (
-          material_type, material_item_id, current_rank_def_id,
-          total_attempts, consecutive_success, last_studied_at, next_review_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      `, [materialType, itemIdStr, assessedRankDefId, totalAttempts, consecutiveSuccess, nowStr, nextReviewStr]);
+    this.runInTransaction(() => {
+      if (progress) {
+        this.db.run(`
+          UPDATE ITEM_PROGRESS
+          SET current_rank_def_id = ?,
+              total_attempts = ?,
+              consecutive_success = ?,
+              last_studied_at = ?,
+              next_review_at = ?
+          WHERE progress_id = ?
+        `, [assessedRankDefId, totalAttempts, consecutiveSuccess, nowStr, nextReviewStr, progressId]);
+      } else {
+        this.db.run(`
+          INSERT INTO ITEM_PROGRESS (
+            material_type, material_item_id, current_rank_def_id,
+            total_attempts, consecutive_success, last_studied_at, next_review_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `, [materialType, itemIdStr, assessedRankDefId, totalAttempts, consecutiveSuccess, nowStr, nextReviewStr]);
 
-      const lastIdRow = this.queryOne('SELECT last_insert_rowid() as id');
-      progressId = lastIdRow.id;
-    }
+        const lastIdRow = this.queryOne('SELECT last_insert_rowid() as id');
+        progressId = lastIdRow.id;
+      }
 
-    this.db.run(`
-      INSERT INTO STUDY_LOGS (progress_id, assessed_rank_def_id, time_spent_ms, studied_at)
-      VALUES (?, ?, ?, ?)
-    `, [progressId, assessedRankDefId, timeSpentMs, nowStr]);
+      this.db.run(`
+        INSERT INTO STUDY_LOGS (progress_id, assessed_rank_def_id, time_spent_ms, studied_at)
+        VALUES (?, ?, ?, ?)
+      `, [progressId, assessedRankDefId, timeSpentMs, nowStr]);
+
+      const lastLogRow = this.queryOne('SELECT last_insert_rowid() as id');
+      logId = lastLogRow ? lastLogRow.id : null;
+    });
 
     await this.saveToStorage();
     return {
       progressId,
+      logId,
       totalAttempts,
       consecutiveSuccess,
       nextReviewAt: nextReviewStr,
-      intervalDays
+      intervalDays,
+      undoSnapshot: {
+        materialType,
+        materialItemId: itemIdStr,
+        progressId,
+        logId,
+        existedBefore: !!prevProgressSnapshot,
+        prevProgress: prevProgressSnapshot
+      }
     };
+  }
+
+  /**
+   * 直前の学習評価結果を取り消して進捗・ログを元の状態にロールバック（Undo機能）
+   */
+  async undoStudyResult(undoSnapshot) {
+    if (!undoSnapshot || !this.db) return false;
+
+    this.runInTransaction(() => {
+      if (undoSnapshot.logId) {
+        this.db.run('DELETE FROM STUDY_LOGS WHERE log_id = ?', [undoSnapshot.logId]);
+      }
+
+      if (!undoSnapshot.existedBefore) {
+        this.db.run('DELETE FROM ITEM_PROGRESS WHERE progress_id = ?', [undoSnapshot.progressId]);
+      } else if (undoSnapshot.prevProgress) {
+        const prev = undoSnapshot.prevProgress;
+        this.db.run(`
+          UPDATE ITEM_PROGRESS
+          SET current_rank_def_id = ?,
+              total_attempts = ?,
+              consecutive_success = ?,
+              last_studied_at = ?,
+              next_review_at = ?
+          WHERE progress_id = ?
+        `, [
+          prev.current_rank_def_id,
+          prev.total_attempts || 0,
+          prev.consecutive_success || 0,
+          prev.last_studied_at || null,
+          prev.next_review_at || null,
+          undoSnapshot.progressId
+        ]);
+      }
+    });
+
+    await this.saveToStorage();
+    return true;
   }
 
   /**
@@ -1439,7 +1530,7 @@ class DBService {
       const nextReviewDate = new Date(now.getTime() + rankDef.default_interval_days * 24 * 60 * 60 * 1000);
       const nextReviewStr = this.formatDate(nextReviewDate);
 
-      let progress = this.queryOne(`
+      const progress = this.queryOne(`
         SELECT progress_id FROM ITEM_PROGRESS 
         WHERE material_type = ? AND material_item_id = ?
       `, [materialType, itemIdStr]);
@@ -1466,7 +1557,7 @@ class DBService {
   }
 
   /**
-   * 統計情報の集計
+   * 統計情報の集計（スケール切り替え時の相互マッピング集計対応）
    */
   getStats(materialType = 'chinese_top50', scaleId = 'simple_3') {
     const meta = this.getMaterialMetadata(materialType);
@@ -1481,17 +1572,31 @@ class DBService {
     const rankDefs = this.getRankDefinitions(scaleId);
     const maxLevel = rankDefs.length > 0 ? rankDefs[rankDefs.length - 1].rank_level : 3;
 
+    // 現在の教材の進捗をランク定義IDごとに一括取得し、指定スケールへマッピング集計
+    const rawCounts = this.query(`
+      SELECT p.current_rank_def_id, COUNT(*) as count
+      FROM ITEM_PROGRESS p
+      WHERE p.material_type = ? AND p.current_rank_def_id IS NOT NULL
+      GROUP BY p.current_rank_def_id
+    `, [materialType]);
+
+    const mappedCountByDefId = {};
+    rankDefs.forEach(d => {
+      mappedCountByDefId[d.rank_def_id] = 0;
+    });
+
+    rawCounts.forEach(r => {
+      const mappedDef = this.mapRankDefToScale(r.current_rank_def_id, scaleId);
+      if (mappedDef) {
+        mappedCountByDefId[mappedDef.rank_def_id] = (mappedCountByDefId[mappedDef.rank_def_id] || 0) + (r.count || 0);
+      }
+    });
+
     const distribution = [];
     let masteredCount = 0;
 
     for (const def of rankDefs) {
-      const row = this.queryOne(`
-        SELECT COUNT(*) as count
-        FROM ITEM_PROGRESS p
-        WHERE p.material_type = ? AND p.current_rank_def_id = ?
-      `, [materialType, def.rank_def_id]);
-
-      const count = row ? row.count : 0;
+      const count = mappedCountByDefId[def.rank_def_id] || 0;
       distribution.push({
         rank_def_id: def.rank_def_id,
         rank_level: def.rank_level,
@@ -1589,35 +1694,22 @@ class DBService {
     await this.saveToStorage();
   }
 
+  /**
+   * データベースを初期状態にリセット
+   */
   async resetToInitial() {
-    if (this.db) {
-      this.db.close();
+    await this.cleanupLegacyIndexedDBCache();
+    if (!this.SQL) {
+      await this.init();
     }
-    await this.clearIndexedDB();
-    this.isInitialized = false;
-    await this.init();
+    await this.createNewDatabase();
+    await this.seedChineseTop50Sample();
+    await this.saveToStorage();
   }
 
   formatDate(d) {
     const pad = n => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-  }
-
-  openIndexedDB() {
-    return new Promise((resolve, reject) => {
-      if (typeof indexedDB === 'undefined') {
-        return resolve(null);
-      }
-      const req = indexedDB.open(this.dbName, 1);
-      req.onupgradeneeded = (e) => {
-        const idb = e.target.result;
-        if (!idb.objectStoreNames.contains(this.storeName)) {
-          idb.createObjectStore(this.storeName);
-        }
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
   }
 
   async saveToStorage() {
@@ -1648,17 +1740,6 @@ class DBService {
     }
 
     try {
-      if (typeof this.fileHandle.queryPermission === 'function') {
-        const queryStatus = await this.fileHandle.queryPermission({ mode: 'readwrite' });
-        if (queryStatus !== 'granted' && typeof this.fileHandle.requestPermission === 'function') {
-          try {
-            await this.fileHandle.requestPermission({ mode: 'readwrite' });
-          } catch (pErr) {
-            console.warn('[DBService] Permission request deferred:', pErr);
-          }
-        }
-      }
-
       const binary = this.exportBinary();
       const writable = await this.fileHandle.createWritable();
       await writable.write(binary);
@@ -1666,10 +1747,8 @@ class DBService {
 
       this.lastSavedAt = new Date();
       this.isModified = false;
-      console.log(`[DBService] Successfully saved to local file: ${this.fileName} (${binary.length} bytes)`);
       return true;
     } catch (err) {
-      console.warn('[DBService] Failed to write to local file handle (saved in memory, marked as modified):', err);
       this.isModified = true;
       return false;
     }
@@ -1714,12 +1793,7 @@ class DBService {
 
     const file = await handle.getFile();
     const arrayBuffer = await file.arrayBuffer();
-
-    if (this.db) {
-      this.db.close();
-    }
-    this.db = new this.SQL.Database(new Uint8Array(arrayBuffer));
-    await this.createSchemaAndSeed();
+    await this.openDatabaseFromBuffer(arrayBuffer);
     this.setFileHandle(handle);
     return file;
   }
@@ -1733,18 +1807,12 @@ class DBService {
     }
     if (typeof indexedDB === 'undefined') return;
     try {
-      const legacyDbName = 'learning_rank_db_storage';
-      const req = indexedDB.deleteDatabase(legacyDbName);
-      req.onsuccess = () => {
-        console.log('[DBService] Cleaned up legacy IndexedDB database cache to free disk space.');
-      };
+      const req = indexedDB.deleteDatabase('learning_rank_db_storage');
+      req.onsuccess = () => {};
       req.onerror = () => {};
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) {}
   }
 }
-
 
 if (typeof window !== 'undefined') {
   window.DBService = DBService;

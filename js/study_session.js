@@ -2,15 +2,20 @@
  * StudySessionManager - フラッシュカード学習セッション管理マネージャー
  * 
  * 責務:
- * 1. 学習セッション状態（出題キュー、進行インデックス、タイマー変数、回答履歴）の管理
+ * 1. 学習セッション状態（出題キュー、進行インデックス、タイマー変数、無操作監視、回答履歴）の管理
  * 2. フラッシュカードのDOM描画（問題、動的ヒント、答え、ランク評価ボタン群）
- * 3. 高精度タイマー計測（一時停止中の時間除外、60秒放置時の自動停止ガード、200ms〜60秒サニティキャップ）
+ * 3. 高精度タイマー計測（一時停止中の時間除外、最後の操作・再開から60秒放置時の自動停止ガード、200ms〜60秒サニティキャップ）
  * 4. 音声読み上げ連携（自動発音、問題/回答の発音）
  * 5. キーボードショートカット（Space, 1-5, P, Esc, R）
  * 6. セッション完了サマリー画面の描画と結果集計
  */
 
 class StudySessionManager {
+  static AUTO_PAUSE_IDLE_MS = 60000; // 60秒無操作で自動一時停止
+  static MIN_SANITY_TIME_MS = 200;   // 最小回答時間キャップ (0.2秒)
+  static MAX_SANITY_TIME_MS = 60000; // 最大回答時間キャップ (60.0秒)
+  static TIMER_TICK_MS = 100;        // タイマー更新間隔 (0.1秒)
+
   constructor(app = null, dbService = null, speechService = null) {
     this.app = app;
     this.dbService = dbService;
@@ -19,19 +24,93 @@ class StudySessionManager {
       ? new AutoPlaybackManager(app, dbService, speechService, this)
       : null;
 
+    // 自動一時停止のタイムアウト設定（ミリ秒、0は自動停止OFF）
+    this.autoPauseTimeoutMs = this._loadAutoPauseTimeoutMs();
+    // 直近セッションで最高ランク以外だった苦手項目リスト（即復習用）
+    this.lastWeakItems = [];
+
     // セッション状態
-    this.state = {
+    this.state = this._createInitialState();
+  }
+
+  /**
+   * localStorageから自動一時停止秒数設定を読み込み（デフォルト60秒）
+   */
+  _loadAutoPauseTimeoutMs() {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const saved = localStorage.getItem('ankiflow_auto_pause_sec');
+        if (saved !== null && saved !== undefined && saved !== '') {
+          if (saved === '0' || saved === 'off') return 0;
+          const sec = parseInt(saved, 10);
+          if (!isNaN(sec) && sec > 0) return sec * 1000;
+        }
+      }
+    } catch (e) {}
+    return StudySessionManager.AUTO_PAUSE_IDLE_MS;
+  }
+
+  /**
+   * 自動一時停止までの秒数を変更・保存（0 または 'off' で無効化）
+   */
+  setAutoPauseTimeoutSec(sec) {
+    let nextMs = StudySessionManager.AUTO_PAUSE_IDLE_MS;
+    if (sec === 0 || sec === '0' || sec === 'off') {
+      nextMs = 0;
+    } else {
+      const parsed = parseInt(sec, 10);
+      if (!isNaN(parsed) && parsed > 0) {
+        nextMs = parsed * 1000;
+      }
+    }
+    this.autoPauseTimeoutMs = nextMs;
+    const secStr = String(Math.round(nextMs / 1000));
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('ankiflow_auto_pause_sec', secStr);
+      }
+    } catch (e) {}
+
+    // 画面上のセレクター表示を同期
+    ['select-auto-pause-timeout', 'setup-auto-pause-select'].forEach(id => {
+      const el = this.getEl(id);
+      if (el && el.value !== secStr) {
+        el.value = secStr;
+      }
+    });
+
+    this.touchActivity();
+    return nextMs;
+  }
+
+  /**
+   * 現在の自動一時停止設定（秒数、0はOFF）を取得
+   */
+  getAutoPauseTimeoutSec() {
+    const ms = (this.autoPauseTimeoutMs !== undefined && this.autoPauseTimeoutMs !== null)
+      ? this.autoPauseTimeoutMs
+      : StudySessionManager.AUTO_PAUSE_IDLE_MS;
+    return Math.round(ms / 1000);
+  }
+
+  _createInitialState(overrides = {}) {
+    const now = Date.now();
+    return {
       isActive: false,
       mode: 'unmastered_first',
+      options: {},
       queue: [],
       currentIndex: 0,
       isAnswerShown: false,
       isPaused: false,
+      isSubmitting: false,
       accumulatedMs: 0,
-      currentRunStart: 0,
+      currentRunStart: now,
+      lastActivityStart: now,
       timerInterval: null,
       elapsedMs: 0,
-      results: []
+      results: [],
+      ...overrides
     };
   }
 
@@ -51,6 +130,15 @@ class StudySessionManager {
     if (speechService) this.speechService = speechService;
     if (this.autoPlaybackManager) {
       this.autoPlaybackManager.setServices({ app, dbService, speechService, studySessionManager: this });
+    }
+  }
+
+  /**
+   * ユーザー操作時のアクティビティ時刻を更新（自動一時停止までの猶予60秒をリセット）
+   */
+  touchActivity() {
+    if (this.state && this.state.isActive && !this.state.isPaused) {
+      this.state.lastActivityStart = Date.now();
     }
   }
 
@@ -75,7 +163,9 @@ class StudySessionManager {
       ? (options.autoPlayOrder || options.autoPlayBaseMode || 'sequential')
       : mode;
 
-    const queue = this.dbService.getStudyQueue(materialType, queryMode, currentScale, limit, options);
+    const queue = (options && Array.isArray(options.customQueue) && options.customQueue.length > 0)
+      ? options.customQueue.map(item => ({ ...item }))
+      : this.dbService.getStudyQueue(materialType, queryMode, currentScale, limit, options);
     if (!queue || queue.length === 0) {
       if (typeof alert !== 'undefined') alert('出題対象の項目がありません。ID範囲やランクの絞り込み条件を見直してください。');
       return;
@@ -92,20 +182,12 @@ class StudySessionManager {
     }
 
     // 通常のフラッシュカード学習セッション開始
-    this.state = {
+    this.state = this._createInitialState({
       isActive: true,
       mode,
       options,
-      queue,
-      currentIndex: 0,
-      isAnswerShown: false,
-      isPaused: false,
-      accumulatedMs: 0,
-      currentRunStart: 0,
-      timerInterval: null,
-      elapsedMs: 0,
-      results: []
-    };
+      queue
+    });
 
     const setupArea = this.getEl('study-setup-area');
     const completeArea = this.getEl('study-complete-area');
@@ -126,13 +208,9 @@ class StudySessionManager {
     if (labelAutoSpeak) labelAutoSpeak.style.display = 'inline-flex';
 
     const timerIndicator = typeof document !== 'undefined' ? document.querySelector('.timer-indicator') : null;
-    if (timerIndicator) timerIndicator.style.display = isAutoPlay ? 'none' : 'inline-block';
+    if (timerIndicator) timerIndicator.style.display = 'inline-block';
 
-    if (isAutoPlay) {
-      this.startAutoPlay();
-    } else {
-      this.renderCurrentCard();
-    }
+    this.renderCurrentCard();
   }
 
   /**
@@ -180,18 +258,29 @@ class StudySessionManager {
       materialLabel.textContent = labelText;
     }
 
-    // 現在ランクバッジ
+    // 現在ランクバッジ（スケール切り替え時のマッピング表示に対応）
     const rankBadge = this.getEl('card-current-rank');
     if (rankBadge) {
-      if (currentItem.current_rank_def_id && currentItem.rank_label) {
-        rankBadge.textContent = currentItem.rank_label;
-        rankBadge.style.backgroundColor = currentItem.color_code + '20';
-        rankBadge.style.color = currentItem.color_code;
+      const displayLabel = currentItem.mapped_rank_label || currentItem.rank_label;
+      const displayColor = currentItem.mapped_color_code || currentItem.color_code;
+      if (currentItem.current_rank_def_id && displayLabel) {
+        rankBadge.textContent = displayLabel;
+        rankBadge.style.backgroundColor = displayColor + '20';
+        rankBadge.style.color = displayColor;
       } else {
         rankBadge.textContent = '未学習';
         rankBadge.style.backgroundColor = '#f1f5f9';
         rankBadge.style.color = 'var(--text-muted)';
       }
+    }
+
+    // Undo（1つ前に戻る）ボタンの有効・無効状態を更新
+    const btnUndo = this.getEl('btn-undo-study');
+    if (btnUndo) {
+      const canUndo = !session.isAutoPlay && Array.isArray(session.results) && session.results.length > 0;
+      btnUndo.disabled = !canUndo;
+      btnUndo.style.opacity = canUndo ? '1' : '0.45';
+      btnUndo.style.cursor = canUndo ? 'pointer' : 'not-allowed';
     }
 
     // 問題・見出し
@@ -217,6 +306,7 @@ class StudySessionManager {
             box.title = `クリックで発音: ${val}`;
             box.addEventListener('click', (e) => {
               e.stopPropagation();
+              this.touchActivity();
               if (this.speechService) this.speechService.speak(val, { lang: 'auto' });
             });
             hintsContainer.appendChild(box);
@@ -233,21 +323,21 @@ class StudySessionManager {
 
     // ボタン・状態リセット
     session.isAnswerShown = false;
+    session.isSubmitting = false;
     const btnShowAnswer = this.getEl('btn-show-answer');
     const answerArea = this.getEl('card-answer-area');
     const autoPlayStatusArea = this.getEl('auto-play-card-status-area');
+    const cardEvalContainer = this.getEl('card-eval-container');
 
     if (session.isAutoPlay) {
       if (btnShowAnswer) btnShowAnswer.style.display = 'none';
       if (answerArea) answerArea.style.display = 'none';
       if (autoPlayStatusArea) autoPlayStatusArea.style.display = 'block';
-      const cardEvalContainer = this.getEl('card-eval-container');
       if (cardEvalContainer) cardEvalContainer.style.display = 'none';
     } else {
       if (btnShowAnswer) btnShowAnswer.style.display = 'inline-block';
       if (answerArea) answerArea.style.display = 'none';
       if (autoPlayStatusArea) autoPlayStatusArea.style.display = 'none';
-      const cardEvalContainer = this.getEl('card-eval-container');
       if (cardEvalContainer) cardEvalContainer.style.display = 'block';
       // 評価ボタン群の生成
       this.renderRankButtons();
@@ -265,20 +355,38 @@ class StudySessionManager {
   }
 
   /**
-   * 現在の問題文を発音
+   * 現在のカードの発話対象テキストと言語設定を解決
+   * @param {'prompt'|'answer'} side
+   * @returns {{ text: string, lang: string } | null}
    */
-  speakCurrentPrompt() {
+  resolveCurrentSpeechTarget(side = 'prompt') {
     const session = this.state;
-    if (!session.isActive || session.currentIndex >= session.queue.length) return;
+    if (!session || !session.isActive || session.currentIndex >= session.queue.length) return null;
     const currentItem = session.queue[session.currentIndex];
     const materialType = this.app ? this.app.materialType : 'chinese_top50';
     const meta = this.dbService ? this.dbService.getMaterialMetadata(materialType) : null;
-    const speechCol = meta ? meta.prompt_speech_column : null;
+
+    const isPrompt = (side === 'prompt');
+    const speechCol = meta ? (isPrompt ? meta.prompt_speech_column : meta.answer_speech_column) : null;
+    const fallbackText = isPrompt ? currentItem.display_prompt : currentItem.display_answer;
+    const lang = meta ? ((isPrompt ? meta.prompt_lang : meta.answer_lang) || 'auto') : 'auto';
+
     const text = (speechCol && currentItem[speechCol] !== undefined && currentItem[speechCol] !== null && String(currentItem[speechCol]).trim() !== '')
       ? String(currentItem[speechCol]).trim()
-      : currentItem.display_prompt;
-    if (text && this.speechService) {
-      this.speechService.speak(text, { lang: (meta && meta.prompt_lang) ? meta.prompt_lang : 'auto' });
+      : fallbackText;
+
+    if (!text) return null;
+    return { text, lang };
+  }
+
+  /**
+   * 現在の問題文を発音
+   */
+  speakCurrentPrompt() {
+    this.touchActivity();
+    const target = this.resolveCurrentSpeechTarget('prompt');
+    if (target && this.speechService) {
+      this.speechService.speak(target.text, { lang: target.lang });
     }
   }
 
@@ -286,17 +394,10 @@ class StudySessionManager {
    * 現在の回答文を発音
    */
   speakCurrentAnswer() {
-    const session = this.state;
-    if (!session.isActive || session.currentIndex >= session.queue.length) return;
-    const currentItem = session.queue[session.currentIndex];
-    const materialType = this.app ? this.app.materialType : 'chinese_top50';
-    const meta = this.dbService ? this.dbService.getMaterialMetadata(materialType) : null;
-    const speechCol = meta ? meta.answer_speech_column : null;
-    const text = (speechCol && currentItem[speechCol] !== undefined && currentItem[speechCol] !== null && String(currentItem[speechCol]).trim() !== '')
-      ? String(currentItem[speechCol]).trim()
-      : currentItem.display_answer;
-    if (text && this.speechService) {
-      this.speechService.speak(text, { lang: (meta && meta.answer_lang) ? meta.answer_lang : 'auto' });
+    this.touchActivity();
+    const target = this.resolveCurrentSpeechTarget('answer');
+    if (target && this.speechService) {
+      this.speechService.speak(target.text, { lang: target.lang });
     }
   }
 
@@ -335,6 +436,7 @@ class StudySessionManager {
    * @param {boolean} triggerAutoSpeak - 自動発音をトリガーするか
    */
   revealAnswer(triggerAutoSpeak = true) {
+    this.touchActivity();
     this.state.isAnswerShown = true;
     const btnShowAnswer = this.getEl('btn-show-answer');
     const answerArea = this.getEl('card-answer-area');
@@ -418,8 +520,46 @@ class StudySessionManager {
     if (this.autoPlaybackManager) this.autoPlaybackManager.finish(msg);
   }
 
+  // ==========================================
+  // タイマー制御・放置ガード（自動一時停止と再開）
+  // ==========================================
+
   /**
-   * タイマー開始
+   * インターバル監視ループの内部起動（startTimer / resume 共通）
+   */
+  _startTimerLoop() {
+    this.stopTimer();
+    const session = this.state;
+    if (session.isAutoPlay) return;
+
+    const timerEl = this.getEl('card-timer');
+
+    session.timerInterval = setInterval(() => {
+      if (session.isPaused || !session.isActive) return;
+
+      const now = Date.now();
+      const currentRun = now - session.currentRunStart;
+      const totalElapsed = session.accumulatedMs + currentRun;
+      session.elapsedMs = totalElapsed;
+
+      if (timerEl) {
+        timerEl.textContent = (totalElapsed / 1000).toFixed(1) + 's';
+      }
+
+      // 最後の操作または再開から設定秒数経過で自動一時停止（通常学習時の放置ガード、0の場合はOFF）
+      const timeoutMs = (this.autoPauseTimeoutMs !== undefined && this.autoPauseTimeoutMs !== null)
+        ? this.autoPauseTimeoutMs
+        : StudySessionManager.AUTO_PAUSE_IDLE_MS;
+      const idleBase = session.lastActivityStart || session.currentRunStart;
+      const idleElapsed = now - idleBase;
+      if (!session.isAutoPlay && timeoutMs > 0 && idleElapsed >= timeoutMs) {
+        this.pause(true);
+      }
+    }, StudySessionManager.TIMER_TICK_MS);
+  }
+
+  /**
+   * 新しいカード用のタイマー開始
    */
   startTimer() {
     this.stopTimer();
@@ -427,9 +567,11 @@ class StudySessionManager {
     // 自動連続再生モード中は通常タイマー（および放置ガード）を動かさない
     if (session.isAutoPlay) return;
 
+    const now = Date.now();
     session.isPaused = false;
     session.accumulatedMs = 0;
-    session.currentRunStart = Date.now();
+    session.currentRunStart = now;
+    session.lastActivityStart = now;
     session.elapsedMs = 0;
 
     const overlay = this.getEl('study-pause-overlay');
@@ -441,22 +583,7 @@ class StudySessionManager {
     const timerEl = this.getEl('card-timer');
     if (timerEl) timerEl.textContent = '0.0s';
 
-    session.timerInterval = setInterval(() => {
-      if (session.isPaused) return;
-
-      const currentRun = Date.now() - session.currentRunStart;
-      const totalElapsed = session.accumulatedMs + currentRun;
-      session.elapsedMs = totalElapsed;
-
-      if (timerEl) {
-        timerEl.textContent = (totalElapsed / 1000).toFixed(1) + 's';
-      }
-
-      // 60秒経過で自動一時停止（通常学習時の放置ガード）
-      if (!session.isAutoPlay && totalElapsed >= 60000) {
-        this.pause(true);
-      }
-    }, 100);
+    this._startTimerLoop();
   }
 
   /**
@@ -471,7 +598,7 @@ class StudySessionManager {
 
   /**
    * 学習タイマーの一時停止
-   * @param {boolean} isAuto - 60秒経過等による自動停止か
+   * @param {boolean} isAuto - 60秒無操作・タブ非表示等による自動停止か
    */
   pause(isAuto = false) {
     const session = this.state;
@@ -482,7 +609,9 @@ class StudySessionManager {
       return;
     }
 
-    session.accumulatedMs += (Date.now() - session.currentRunStart);
+    const now = Date.now();
+    session.accumulatedMs += Math.max(0, now - session.currentRunStart);
+    session.elapsedMs = session.accumulatedMs;
     session.isPaused = true;
     this.stopTimer();
 
@@ -498,8 +627,9 @@ class StudySessionManager {
       const descEl = overlay.querySelector('p');
       if (titleEl && descEl) {
         if (isAuto) {
+          const timeoutSec = Math.max(1, Math.round(((this.autoPauseTimeoutMs !== undefined && this.autoPauseTimeoutMs !== null && this.autoPauseTimeoutMs > 0) ? this.autoPauseTimeoutMs : StudySessionManager.AUTO_PAUSE_IDLE_MS) / 1000));
           titleEl.textContent = '⏱️ 自動一時停止中';
-          descEl.innerHTML = '60秒間操作がなかったため、タイマーを自動停止しました。<br>準備ができたら「学習を再開する」を押してください。';
+          descEl.innerHTML = `${timeoutSec}秒間操作がなかったため、タイマーを自動停止しました。<br>準備ができたら「学習を再開する」を押してください。`;
         } else {
           titleEl.textContent = '☕ 一時停止中（休憩）';
           descEl.innerHTML = '回答時間のカウントを一時停止しています。<br>落ち着いて準備ができたら再開してください。';
@@ -518,8 +648,11 @@ class StudySessionManager {
     const session = this.state;
     if (!session.isActive || !session.isPaused) return;
 
+    const now = Date.now();
     session.isPaused = false;
-    session.currentRunStart = Date.now();
+    session.currentRunStart = now;
+    // 再開時点から新たに60秒間の無操作猶予を付与（再開直後に即再停止するのを防止）
+    session.lastActivityStart = now;
 
     const overlay = this.getEl('study-pause-overlay');
     if (overlay) overlay.style.display = 'none';
@@ -535,23 +668,7 @@ class StudySessionManager {
     const pauseBtn = this.getEl('btn-pause-study');
     if (pauseBtn) pauseBtn.textContent = '⏸️ 一時停止';
 
-    const timerEl = this.getEl('card-timer');
-
-    session.timerInterval = setInterval(() => {
-      if (session.isPaused) return;
-
-      const currentRun = Date.now() - session.currentRunStart;
-      const totalElapsed = session.accumulatedMs + currentRun;
-      session.elapsedMs = totalElapsed;
-
-      if (timerEl) {
-        timerEl.textContent = (totalElapsed / 1000).toFixed(1) + 's';
-      }
-
-      if (!session.isAutoPlay && totalElapsed >= 60000) {
-        this.pause(true);
-      }
-    }, 100);
+    this._startTimerLoop();
   }
 
   /**
@@ -591,15 +708,32 @@ class StudySessionManager {
    * ランク評価を確定して記録・次問遷移
    */
   async submitAssessment(rankDefId) {
-    this.stopTimer();
     const session = this.state;
+    if (!session.isActive || session.isSubmitting) return;
+    session.isSubmitting = true;
+
+    this.stopTimer();
     const currentItem = session.queue[session.currentIndex];
     const materialType = this.app ? this.app.materialType : 'chinese_top50';
 
     // 経過ミリ秒（累積＋今回）
-    const timeSpentRaw = session.accumulatedMs + (session.isPaused ? 0 : (Date.now() - session.currentRunStart));
+    const timeSpentRaw = session.accumulatedMs + (session.isPaused ? 0 : Math.max(0, Date.now() - session.currentRunStart));
     // 異常値防止サニティキャップ: 最低0.2秒、最大60秒
-    const timeSpent = Math.min(Math.max(timeSpentRaw, 200), 60000);
+    const timeSpent = Math.min(
+      Math.max(timeSpentRaw, StudySessionManager.MIN_SANITY_TIME_MS),
+      StudySessionManager.MAX_SANITY_TIME_MS
+    );
+
+    const prevItemSnapshot = {
+      current_rank_def_id: currentItem.current_rank_def_id,
+      rank_label: currentItem.rank_label,
+      color_code: currentItem.color_code,
+      mapped_rank_def_id: currentItem.mapped_rank_def_id,
+      mapped_rank_level: currentItem.mapped_rank_level,
+      mapped_rank_label: currentItem.mapped_rank_label,
+      mapped_color_code: currentItem.mapped_color_code,
+      total_attempts: currentItem.total_attempts
+    };
 
     try {
       const res = await this.dbService.recordStudyResult({
@@ -613,15 +747,18 @@ class StudySessionManager {
         item: currentItem,
         rankDefId,
         timeSpent,
-        res
+        res,
+        prevItemSnapshot
       });
 
       session.currentIndex++;
+      session.isSubmitting = false;
       if (this.app && typeof this.app.updateFileSyncUI === 'function') {
         this.app.updateFileSyncUI();
       }
       this.renderCurrentCard();
     } catch (err) {
+      session.isSubmitting = false;
       console.error('[StudySessionManager] Error saving study log:', err);
       if (this.app && typeof this.app.showToast === 'function') {
         this.app.showToast('学習データの保存に失敗しました: ' + err.message, 'danger');
@@ -630,11 +767,82 @@ class StudySessionManager {
   }
 
   /**
+   * 直前のランク評価を取り消して1つ前の問題に戻る（Undo機能）
+   */
+  async undoLastAssessment() {
+    const session = this.state;
+    if (!session || !session.isActive || session.isAutoPlay || session.isSubmitting) return false;
+    if (!Array.isArray(session.results) || session.results.length === 0) return false;
+
+    session.isSubmitting = true;
+    this.stopTimer();
+
+    try {
+      const lastResult = session.results.pop();
+      if (lastResult && lastResult.res && lastResult.res.undoSnapshot && this.dbService && typeof this.dbService.undoStudyResult === 'function') {
+        await this.dbService.undoStudyResult(lastResult.res.undoSnapshot);
+      }
+
+      session.currentIndex = Math.max(0, session.currentIndex - 1);
+      if (lastResult && lastResult.prevItemSnapshot && session.queue[session.currentIndex]) {
+        Object.assign(session.queue[session.currentIndex], lastResult.prevItemSnapshot);
+      }
+
+      session.isSubmitting = false;
+      if (this.app) {
+        if (typeof this.app.updateFileSyncUI === 'function') {
+          this.app.updateFileSyncUI();
+        }
+        if (typeof this.app.showToast === 'function') {
+          this.app.showToast('↩️ 直前の評価を取り消して前の問題に戻りました', 'info');
+        }
+      }
+
+      this.renderCurrentCard();
+      return true;
+    } catch (err) {
+      session.isSubmitting = false;
+      console.error('[StudySessionManager] Error undoing study result:', err);
+      return false;
+    }
+  }
+
+  /**
+   * 直近の完了セッションで最高ランク（「完璧」等）以外だった項目だけを再テスト開始
+   */
+  startRetryWeakSession() {
+    if (!this.lastWeakItems || this.lastWeakItems.length === 0) return false;
+    const materialType = this.app ? this.app.materialType : 'chinese_top50';
+    const currentScale = this.app ? this.app.currentScale : 'simple_3';
+
+    let refreshedQueue = this.lastWeakItems.map(item => ({ ...item }));
+    if (this.dbService && typeof this.dbService.getItemsWithProgress === 'function') {
+      try {
+        const latestItems = this.dbService.getItemsWithProgress(materialType, {}, currentScale);
+        if (Array.isArray(latestItems) && latestItems.length > 0) {
+          const itemMap = new Map(latestItems.map(it => [String(it.item_id), it]));
+          refreshedQueue = this.lastWeakItems.map(oldItem => {
+            const latest = itemMap.get(String(oldItem.item_id));
+            return latest ? { ...latest } : { ...oldItem };
+          });
+        }
+      } catch (e) {}
+    }
+
+    this.start('unmastered_first', 'all', { customQueue: refreshedQueue });
+    if (this.app && typeof this.app.showToast === 'function') {
+      this.app.showToast(`🔥 覚えきれなかった ${refreshedQueue.length} 件の再テストを開始しました！`, 'info');
+    }
+    return true;
+  }
+
+  /**
    * セッション完了
    */
   finish() {
     this.stopTimer();
     this.state.isActive = false;
+    this.state.isSubmitting = false;
 
     const overlay = this.getEl('study-pause-overlay');
     if (overlay) overlay.style.display = 'none';
@@ -672,6 +880,9 @@ class StudySessionManager {
     if (countEl) countEl.textContent = totalCount;
     if (timeEl) timeEl.textContent = avgTime + 's';
 
+    // 今回の評価内訳集計 & 最高ランク以外の苦手項目抽出（即復習用）
+    this._updateSessionCompleteBreakdown(results);
+
     // 学習セッション完了時にセットアップ画面のランク別件数・ピル表示を最新DBデータへ更新
     this.refreshSetupForm();
 
@@ -681,6 +892,88 @@ class StudySessionManager {
       }
       if (typeof this.app.showToast === 'function') {
         this.app.showToast(`学習セッション完了（${totalCount}件完了）！`, 'success');
+      }
+    }
+  }
+
+  /**
+   * セッション完了画面の評価ランク別内訳と「今回『完璧』以外だった項目だけ即復習」ボタンを更新
+   */
+  _updateSessionCompleteBreakdown(results = []) {
+    const currentScale = this.app ? this.app.currentScale : 'simple_3';
+    const rankDefs = (this.dbService && typeof this.dbService.getRankDefinitions === 'function')
+      ? this.dbService.getRankDefinitions(currentScale)
+      : [];
+    const maxLevel = rankDefs.length > 0 ? rankDefs[rankDefs.length - 1].rank_level : 3;
+
+    const defById = new Map();
+    const countByDefId = new Map();
+    rankDefs.forEach(d => {
+      defById.set(String(d.rank_def_id), d);
+      countByDefId.set(String(d.rank_def_id), 0);
+    });
+
+    // 各アイテムの最終評価を追跡（同一セッション内の重複対策）
+    const latestResultByItemId = new Map();
+    results.forEach((r, idx) => {
+      const defIdStr = String(r.rankDefId);
+      let def = defById.get(defIdStr);
+      if (!def && this.dbService && typeof this.dbService.mapRankDefToScale === 'function') {
+        def = this.dbService.mapRankDefToScale(r.rankDefId, currentScale);
+      }
+      if (def) {
+        const key = String(def.rank_def_id);
+        countByDefId.set(key, (countByDefId.get(key) || 0) + 1);
+      }
+      const itemKey = (r.item && r.item.item_id !== undefined) ? String(r.item.item_id) : `idx_${idx}`;
+      latestResultByItemId.set(itemKey, { item: r.item, rankDefId: r.rankDefId, def });
+    });
+
+    const weakItems = [];
+    latestResultByItemId.forEach(({ item, rankDefId, def }) => {
+      if (!item) return;
+      let isMastered = false;
+      if (def) {
+        isMastered = (def.rank_level === maxLevel);
+      } else {
+        isMastered = (String(rankDefId) === '3' || String(rankDefId) === '8');
+      }
+      if (!isMastered) {
+        weakItems.push(item);
+      }
+    });
+
+    this.lastWeakItems = weakItems;
+
+    // 1. 内訳バッジ群の描画
+    const breakdownEl = this.getEl('summary-rank-breakdown');
+    if (breakdownEl) {
+      if (rankDefs.length > 0) {
+        const badgesHtml = rankDefs.map(d => {
+          const c = countByDefId.get(String(d.rank_def_id)) || 0;
+          return `<span class="summary-rank-badge" style="display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.35rem 0.75rem; border-radius: 999px; font-size: 0.85rem; font-weight: 700; background-color: ${d.color_code}18; color: ${d.color_code}; border: 1px solid ${d.color_code}40;">
+            <span>${this.escapeHtml(d.rank_label)}</span>
+            <strong style="background: ${d.color_code}; color: #fff; padding: 0.05rem 0.45rem; border-radius: 999px; font-size: 0.8rem;">${c}件</strong>
+          </span>`;
+        }).join('');
+        const perfectNote = weakItems.length === 0
+          ? `<div style="margin-top: 0.6rem; font-size: 0.88rem; color: var(--success); font-weight: 700;">✨ 全問最高ランク達成！パーフェクトです！</div>`
+          : '';
+        breakdownEl.innerHTML = `<div style="display: flex; justify-content: center; gap: 0.6rem; flex-wrap: wrap;">${badgesHtml}</div>${perfectNote}`;
+        breakdownEl.style.display = 'block';
+      } else {
+        breakdownEl.style.display = 'none';
+      }
+    }
+
+    // 2. 「今回覚えきれなかったN件を今すぐ再テスト」ボタンの表示制御
+    const retryBtn = this.getEl('btn-retry-weak-study');
+    if (retryBtn) {
+      if (weakItems.length > 0) {
+        retryBtn.style.display = 'inline-flex';
+        retryBtn.innerHTML = `🔥 今回覚えきれなかった ${weakItems.length} 件を今すぐ再テスト`;
+      } else {
+        retryBtn.style.display = 'none';
       }
     }
   }
@@ -730,11 +1023,14 @@ class StudySessionManager {
       } else if (e.key && e.key.toLowerCase() === 'r') {
         e.preventDefault();
         this.speakCurrentPrompt();
+      } else if (!this.state.isPaused && (e.key === 'Backspace' || (e.key && e.key.toLowerCase() === 'z'))) {
+        e.preventDefault();
+        this.undoLastAssessment();
       } else if (this.state.isAnswerShown && !this.state.isPaused && e.key >= '1' && e.key <= '5') {
-        const rankLevel = parseInt(e.key, 10);
+        const keyNum = parseInt(e.key, 10);
         const currentScale = this.app ? this.app.currentScale : 'simple_3';
         const rankDefs = this.dbService ? this.dbService.getRankDefinitions(currentScale) : [];
-        const targetDef = rankDefs.find(d => d.rank_level === rankLevel);
+        const targetDef = rankDefs.find(d => d.rank_level === keyNum) || rankDefs[keyNum - 1];
         if (targetDef) {
           e.preventDefault();
           this.submitAssessment(targetDef.rank_def_id);
@@ -776,12 +1072,17 @@ class StudySessionManager {
     // 3. リアルタイム件数プレビューの更新
     this.updateQueuePreview();
 
-    // 4. 自動再生パネルの表示状態整合
+    // 4. 自動再生パネルの表示状態整合 & 自動一時停止セレクター同期
     const modeSelect = this.getEl('study-mode-select');
     const autoSettings = this.getEl('auto-play-settings-panel');
     if (modeSelect && autoSettings) {
       autoSettings.style.display = modeSelect.value === 'auto_playback' ? 'block' : 'none';
     }
+    const currentTimeoutSecStr = String(this.getAutoPauseTimeoutSec());
+    ['select-auto-pause-timeout', 'setup-auto-pause-select'].forEach(id => {
+      const el = this.getEl(id);
+      if (el) el.value = currentTimeoutSecStr;
+    });
   }
 
   /**

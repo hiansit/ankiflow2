@@ -69,16 +69,21 @@ class AutoPlaybackManager {
 
     // タイマー設定の解析 ('5', '10', '15', '30', 'once', 'unlimited')
     const timerSetting = options.autoPlayTimer || '15';
-    let timerRemainingSec = null;
-    if (timerSetting === 'once' || timerSetting === 'unlimited') {
-      timerRemainingSec = null;
-    } else {
-      timerRemainingSec = parseInt(timerSetting, 10) * 60;
-    }
+    const timerRemainingSec = (timerSetting === 'once' || timerSetting === 'unlimited')
+      ? null
+      : parseInt(timerSetting, 10) * 60;
 
     const promptIntervalMs = Math.round(parseFloat(options.autoPlayPromptInterval || '2.5') * 1000);
     const answerIntervalMs = Math.round(parseFloat(options.autoPlayAnswerInterval || '2.0') * 1000);
 
+    // 既存タイマーや音声をクリーンアップ
+    this.stopCurrentSpeechAndTimer();
+    this.stopAutoPlayTimer();
+    if (typeof this.studySessionManager.stopTimer === 'function') {
+      this.studySessionManager.stopTimer();
+    }
+
+    const now = Date.now();
     // セッション状態の初期化
     session.isActive = true;
     session.mode = 'auto_playback';
@@ -87,8 +92,10 @@ class AutoPlaybackManager {
     session.currentIndex = 0;
     session.isAnswerShown = false;
     session.isPaused = false;
+    session.isSubmitting = false;
     session.accumulatedMs = 0;
-    session.currentRunStart = Date.now();
+    session.currentRunStart = now;
+    session.lastActivityStart = now;
     session.elapsedMs = 0;
     session.results = [];
 
@@ -103,14 +110,12 @@ class AutoPlaybackManager {
     session.autoPlayStepTimeout = null;
     session.autoPlayLoopCount = 1;
 
-    // 通常学習タイマー（放置ガードタイマー）を確実に停止
-    if (this.studySessionManager && typeof this.studySessionManager.stopTimer === 'function') {
-      this.studySessionManager.stopTimer();
-    }
-
     // UIの切り替え
     const setupArea = this.getEl('study-setup-area');
     if (setupArea) setupArea.style.display = 'none';
+
+    const completeArea = this.getEl('study-complete-area');
+    if (completeArea) completeArea.style.display = 'none';
 
     const activeArea = this.getEl('study-active-area');
     if (activeArea) activeArea.style.display = 'block';
@@ -262,6 +267,7 @@ class AutoPlaybackManager {
       }
       session.currentIndex = 0;
       session.autoPlayLoopCount++;
+      this.updateAutoPlayTimerDisplay();
       if (this.app && typeof this.app.showToast === 'function') {
         this.app.showToast(`🎧 ${session.autoPlayLoopCount}周目の再生に入ります`, 'info');
       }
@@ -287,42 +293,46 @@ class AutoPlaybackManager {
     });
   }
 
-  async speakCurrentPromptAsync() {
+  /**
+   * 現在のカードの発話対象を非同期で読み上げ（問題・回答共通）
+   * @param {'prompt'|'answer'} side
+   */
+  async _speakCardSideAsync(side = 'prompt') {
     const session = this.session;
     if (!session || !session.isActive || session.currentIndex >= session.queue.length) return;
-    const currentItem = session.queue[session.currentIndex];
-    const materialType = this.app ? this.app.materialType : 'chinese_top50';
-    const meta = this.dbService ? this.dbService.getMaterialMetadata(materialType) : null;
-    const speechCol = meta ? meta.prompt_speech_column : null;
-    const text = (speechCol && currentItem[speechCol] !== undefined && currentItem[speechCol] !== null && String(currentItem[speechCol]).trim() !== '')
-      ? String(currentItem[speechCol]).trim()
-      : currentItem.display_prompt;
-    if (text && this.speechService && typeof this.speechService.speak === 'function') {
+
+    let target = null;
+    if (this.studySessionManager && typeof this.studySessionManager.resolveCurrentSpeechTarget === 'function') {
+      target = this.studySessionManager.resolveCurrentSpeechTarget(side);
+    } else {
+      const currentItem = session.queue[session.currentIndex];
+      const materialType = this.app ? this.app.materialType : 'chinese_top50';
+      const meta = this.dbService ? this.dbService.getMaterialMetadata(materialType) : null;
+      const isPrompt = (side === 'prompt');
+      const speechCol = meta ? (isPrompt ? meta.prompt_speech_column : meta.answer_speech_column) : null;
+      const fallbackText = isPrompt ? currentItem.display_prompt : currentItem.display_answer;
+      const lang = meta ? ((isPrompt ? meta.prompt_lang : meta.answer_lang) || 'auto') : 'auto';
+      const text = (speechCol && currentItem[speechCol] !== undefined && currentItem[speechCol] !== null && String(currentItem[speechCol]).trim() !== '')
+        ? String(currentItem[speechCol]).trim()
+        : fallbackText;
+      if (text) target = { text, lang };
+    }
+
+    if (target && target.text && this.speechService && typeof this.speechService.speak === 'function') {
       try {
-        await this.speechService.speak(text, { lang: (meta && meta.prompt_lang) ? meta.prompt_lang : 'auto' });
+        await this.speechService.speak(target.text, { lang: target.lang });
       } catch (e) {
-        console.warn('[AutoPlaybackManager] speakCurrentPromptAsync error:', e);
+        console.warn(`[AutoPlaybackManager] speak ${side} error:`, e);
       }
     }
   }
 
+  async speakCurrentPromptAsync() {
+    return this._speakCardSideAsync('prompt');
+  }
+
   async speakCurrentAnswerAsync() {
-    const session = this.session;
-    if (!session || !session.isActive || session.currentIndex >= session.queue.length) return;
-    const currentItem = session.queue[session.currentIndex];
-    const materialType = this.app ? this.app.materialType : 'chinese_top50';
-    const meta = this.dbService ? this.dbService.getMaterialMetadata(materialType) : null;
-    const speechCol = meta ? meta.answer_speech_column : null;
-    const text = (speechCol && currentItem[speechCol] !== undefined && currentItem[speechCol] !== null && String(currentItem[speechCol]).trim() !== '')
-      ? String(currentItem[speechCol]).trim()
-      : currentItem.display_answer;
-    if (text && this.speechService && typeof this.speechService.speak === 'function') {
-      try {
-        await this.speechService.speak(text, { lang: (meta && meta.answer_lang) ? meta.answer_lang : 'auto' });
-      } catch (e) {
-        console.warn('[AutoPlaybackManager] speakCurrentAnswerAsync error:', e);
-      }
-    }
+    return this._speakCardSideAsync('answer');
   }
 
   setAutoPlayCardStatus(msg) {
@@ -355,6 +365,7 @@ class AutoPlaybackManager {
       }
       session.currentIndex = 0;
       session.autoPlayLoopCount++;
+      this.updateAutoPlayTimerDisplay();
     }
     this.runAutoPlayCycle();
   }

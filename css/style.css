@@ -244,7 +244,8 @@ body {
   margin: 1rem 0;
 }
 
-.distribution-segment {
+.distribution-segment,
+.dist-segment {
   height: 100%;
   transition: width 0.3s ease;
 }
@@ -256,21 +257,24 @@ body {
   font-size: 0.85rem;
 }
 
-.legend-item {
+.legend-item,
+.dist-legend-item {
   display: flex;
   align-items: center;
   gap: 0.4rem;
 }
 
-.legend-dot {
+.legend-dot,
+.dist-legend-color {
+  display: inline-block;
   width: 10px;
   height: 10px;
   border-radius: 50%;
 }
 
 .alert-banner {
-  background: #fef2f2;
-  border: 1px solid #fecaca;
+  background: #f8fafc;
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 1rem 1.5rem;
   display: flex;
@@ -279,21 +283,32 @@ body {
   margin-bottom: 2rem;
 }
 
-.alert-banner.has-due {
+.alert-banner.has-due,
+.alert-banner.due {
   background: #fffbeb;
   border-color: #fde68a;
 }
 
+.alert-banner.ok {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+
 .alert-title {
   font-weight: 700;
-  color: #991b1b;
+  color: var(--text-main);
   display: flex;
   align-items: center;
   gap: 0.5rem;
 }
 
-.alert-banner.has-due .alert-title {
+.alert-banner.has-due .alert-title,
+.alert-banner.due .alert-title {
   color: #92400e;
+}
+
+.alert-banner.ok .alert-title {
+  color: #166534;
 }
 
 .action-card-grid {
@@ -494,11 +509,12 @@ body {
 
 .rank-btn {
   flex: 1;
-  min-width: 100px;
-  padding: 0.85rem 0.5rem;
+  min-width: 110px;
+  padding: 0.85rem 0.6rem;
   border-radius: 8px;
-  border: none;
-  color: #ffffff;
+  border: 2px solid var(--border);
+  background: #ffffff;
+  color: var(--text-main);
   font-weight: 700;
   font-size: 0.95rem;
   cursor: pointer;
@@ -506,12 +522,19 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 0.25rem;
-  transition: transform 0.1s, filter 0.2s;
+  transition: transform 0.1s, box-shadow 0.2s, background-color 0.15s;
 }
 
 .rank-btn:hover {
   transform: translateY(-2px);
-  filter: brightness(1.1);
+  box-shadow: var(--shadow-md);
+  background: #f8fafc;
+}
+
+.rank-btn-interval {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-muted);
 }
 
 .rank-btn-key {

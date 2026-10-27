@@ -125,16 +125,27 @@ class App {
       });
     }
 
-    // スケールセレクター切り替え
+    // スケールセレクター切り替え（教材ごとのデフォルト評価スケール記憶＆表示連動）
     const scaleSelect = document.getElementById('scale-select');
     if (scaleSelect) {
       scaleSelect.addEventListener('change', async (e) => {
         this.currentScale = e.target.value;
+        if (this.materialType && this.dbService && typeof this.dbService.setMaterialDefaultScale === 'function') {
+          await this.dbService.setMaterialDefaultScale(this.materialType, this.currentScale);
+        }
+        // 教材一覧タブのランクフィルタ選択肢も新スケールに合わせて再構築
+        const filterSelect = document.getElementById('material-rank-filter');
+        if (filterSelect) filterSelect.innerHTML = '<option value="">すべてのランク</option>';
+
         await this.renderDashboard();
         if (this.isTabActive('tab-materials')) {
           await this.renderMaterialsTable();
         }
+        if (this.studySession && this.studySession.isActive && !this.studySession.isAutoPlay && this.studySessionManager) {
+          this.studySessionManager.renderRankButtons();
+        }
         this.refreshStudySetupForm();
+        this.updateFileSyncUI();
       });
     }
   }
@@ -222,7 +233,8 @@ class App {
           this.showToast('データベースを初期化しました。', 'info');
           await this.refreshMaterialSelector();
           await this.refreshScaleSelector();
-          await this.renderDashboard();
+          await this.onMaterialChanged();
+          this.updateFileSyncUI();
         }
       });
     }
@@ -232,6 +244,32 @@ class App {
     if (btnRunSql) {
       btnRunSql.addEventListener('click', () => this.executeCustomSql());
     }
+  }
+
+  /**
+   * 学習セットアップフォームの現在値を収集
+   */
+  _collectStudySetupOptions() {
+    const startInput = document.getElementById('study-range-start');
+    const endInput = document.getElementById('study-range-end');
+    const rankSelect = document.getElementById('study-rank-filter');
+    const orderSelect = document.getElementById('auto-play-order-select');
+    const timerSelect = document.getElementById('auto-play-timer-select');
+    const intervalSelect = document.getElementById('auto-play-interval-select');
+
+    const startIdVal = startInput ? startInput.value.trim() : '';
+    const endIdVal = endInput ? endInput.value.trim() : '';
+    const rankFilterVal = rankSelect ? rankSelect.value : '';
+
+    return {
+      startId: startIdVal ? parseInt(startIdVal, 10) : null,
+      endId: endIdVal ? parseInt(endIdVal, 10) : null,
+      rankDefId: rankFilterVal || null,
+      autoPlayOrder: orderSelect ? orderSelect.value : 'sequential',
+      autoPlayTimer: timerSelect ? timerSelect.value : '15',
+      autoPlayPromptInterval: intervalSelect ? intervalSelect.value : '2.5',
+      autoPlayAnswerInterval: '2.0'
+    };
   }
 
   /**
@@ -280,27 +318,8 @@ class App {
         const countSelect = document.getElementById('study-count-select');
         if (countSelect) countSelect.value = 'all';
 
-        const startInput = document.getElementById('study-range-start');
-        const endInput = document.getElementById('study-range-end');
-        const rankSelect = document.getElementById('study-rank-filter');
-        const orderSelect = document.getElementById('auto-play-order-select');
-        const timerSelect = document.getElementById('auto-play-timer-select');
-        const intervalSelect = document.getElementById('auto-play-interval-select');
-
-        const startIdVal = startInput ? startInput.value.trim() : '';
-        const endIdVal = endInput ? endInput.value.trim() : '';
-        const rankFilterVal = rankSelect ? rankSelect.value : '';
-
         this.updateStudyQueuePreview();
-        this.startStudySession('auto_playback', 'all', {
-          startId: startIdVal ? parseInt(startIdVal, 10) : null,
-          endId: endIdVal ? parseInt(endIdVal, 10) : null,
-          rankDefId: rankFilterVal || null,
-          autoPlayOrder: orderSelect ? orderSelect.value : 'sequential',
-          autoPlayTimer: timerSelect ? timerSelect.value : '15',
-          autoPlayPromptInterval: intervalSelect ? intervalSelect.value : '2.5',
-          autoPlayAnswerInterval: '2.0'
-        });
+        this.startStudySession('auto_playback', 'all', this._collectStudySetupOptions());
       });
     }
 
@@ -369,32 +388,12 @@ class App {
       btnStartCustom.addEventListener('click', () => {
         const modeSelect = document.getElementById('study-mode-select');
         const countSelect = document.getElementById('study-count-select');
-        const startInput = document.getElementById('study-range-start');
-        const endInput = document.getElementById('study-range-end');
-        const rankSelect = document.getElementById('study-rank-filter');
-        const orderSelect = document.getElementById('auto-play-order-select');
-        const timerSelect = document.getElementById('auto-play-timer-select');
-        const intervalSelect = document.getElementById('auto-play-interval-select');
 
         const mode = modeSelect ? modeSelect.value : 'unmastered_first';
         const countVal = countSelect ? countSelect.value : '15';
         const count = countVal === 'all' ? 'all' : parseInt(countVal, 10);
 
-        const startIdVal = startInput ? startInput.value.trim() : '';
-        const endIdVal = endInput ? endInput.value.trim() : '';
-        const rankFilterVal = rankSelect ? rankSelect.value : '';
-
-        const options = {
-          startId: startIdVal ? parseInt(startIdVal, 10) : null,
-          endId: endIdVal ? parseInt(endIdVal, 10) : null,
-          rankDefId: rankFilterVal || null,
-          autoPlayOrder: orderSelect ? orderSelect.value : 'sequential',
-          autoPlayTimer: timerSelect ? timerSelect.value : '15',
-          autoPlayPromptInterval: intervalSelect ? intervalSelect.value : '2.5',
-          autoPlayAnswerInterval: '2.0'
-        };
-
-        this.startStudySession(mode, count, options);
+        this.startStudySession(mode, count, this._collectStudySetupOptions());
       });
     }
 
@@ -417,6 +416,11 @@ class App {
     const btnPause = document.getElementById('btn-pause-study');
     if (btnPause) {
       btnPause.addEventListener('click', () => this.togglePauseStudySession());
+    }
+
+    const btnUndo = document.getElementById('btn-undo-study');
+    if (btnUndo) {
+      btnUndo.addEventListener('click', () => this.undoStudyAssessment());
     }
 
     const btnResume = document.getElementById('btn-resume-study');
@@ -450,18 +454,33 @@ class App {
       btnAutoPlayStop.addEventListener('click', () => this.finishAutoPlay('自動連続再生を停止しました。'));
     }
 
-    // ブラウザタブ非アクティブ時の自動一時停止（※自動連続再生中は睡眠学習・耳学習のため停止させない）
+    // ブラウザタブ非アクティブ時の自動一時停止（※自動連続再生中または自動停止OFF設定時は停止させない）
     if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
       document.addEventListener('visibilitychange', () => {
         if (document.hidden && this.studySession.isActive && !this.studySession.isPaused) {
           if (this.studySession.isAutoPlay) {
-            // 自動再生モード中は画面消灯やバックグラウンドでも再生を維持
+            return;
+          }
+          if (this.studySessionManager && this.studySessionManager.getAutoPauseTimeoutSec() === 0) {
             return;
           }
           this.pauseStudySession(true);
         }
       });
     }
+
+    // 自動一時停止（放置ガード）秒数・ON/OFF設定
+    ['select-auto-pause-timeout', 'setup-auto-pause-select'].forEach(selectId => {
+      const selectAutoPause = document.getElementById(selectId);
+      if (selectAutoPause && this.studySessionManager) {
+        selectAutoPause.value = String(this.studySessionManager.getAutoPauseTimeoutSec());
+        selectAutoPause.addEventListener('change', (e) => {
+          this.studySessionManager.setAutoPauseTimeoutSec(e.target.value);
+          const sec = this.studySessionManager.getAutoPauseTimeoutSec();
+          this.showToast(sec === 0 ? '⏱️ 自動一時停止を OFF にしました' : `⏱️ 自動一時停止を ${sec}秒 に設定しました`, 'info');
+        });
+      }
+    });
 
     // 自動発音トグル & 読み上げ速度
     const checkAutoSpeak = document.getElementById('check-auto-speak');
@@ -481,7 +500,14 @@ class App {
       });
     }
 
-    // 学習完了画面からの再開
+    // 学習完了画面からの苦手項目即復習 & セットアップ画面へ戻る
+    const btnRetryWeak = document.getElementById('btn-retry-weak-study');
+    if (btnRetryWeak) {
+      btnRetryWeak.addEventListener('click', () => {
+        this.startRetryWeakStudySession();
+      });
+    }
+
     const btnRestart = document.getElementById('btn-restart-study');
     if (btnRestart) {
       btnRestart.addEventListener('click', () => {
@@ -493,17 +519,33 @@ class App {
   }
 
   /**
-   * 教材テーブル検索・フィルター関連イベント
+   * 教材テーブル検索・フィルター・ページ表示件数関連イベント
    */
   initTableFilterEvents() {
     const searchInput = document.getElementById('material-search');
     if (searchInput) {
-      searchInput.addEventListener('input', () => this.renderMaterialsTable());
+      let searchDebounceTimer = null;
+      searchInput.addEventListener('input', () => {
+        if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = setTimeout(() => {
+          this.renderMaterialsTable();
+        }, 150);
+      });
     }
 
     const filterRank = document.getElementById('material-rank-filter');
     if (filterRank) {
       filterRank.addEventListener('change', () => this.renderMaterialsTable());
+    }
+
+    const pageSizeSelect = document.getElementById('materials-page-size');
+    if (pageSizeSelect) {
+      pageSizeSelect.addEventListener('change', (e) => {
+        if (this.uiViews && typeof this.uiViews.setMaterialsPageSize === 'function') {
+          this.uiViews.setMaterialsPageSize(e.target.value);
+          this.renderMaterialsTable();
+        }
+      });
     }
   }
 
@@ -595,6 +637,13 @@ class App {
     const meta = this.dbService.getMaterialMetadata(this.materialType);
     if (subtitle) {
       subtitle.textContent = `${meta.display_name} (SQLite Wasm / sql.js 駆動)`;
+    }
+
+    // 教材ごとに記憶されたデフォルト評価スケールがあれば復元
+    if (meta && meta.default_scale_id && meta.default_scale_id !== this.currentScale) {
+      this.currentScale = meta.default_scale_id;
+      const scaleSelect = document.getElementById('scale-select');
+      if (scaleSelect) scaleSelect.value = this.currentScale;
     }
 
     // 学習中ならセッションリセット
@@ -728,6 +777,12 @@ class App {
   }
   async submitStudyAssessment(rankDefId) {
     if (this.studySessionManager) return await this.studySessionManager.submitAssessment(rankDefId);
+  }
+  async undoStudyAssessment() {
+    if (this.studySessionManager) return await this.studySessionManager.undoLastAssessment();
+  }
+  startRetryWeakStudySession() {
+    if (this.studySessionManager) return this.studySessionManager.startRetryWeakSession();
   }
   finishStudySession() {
     if (this.studySessionManager) this.studySessionManager.finish();
