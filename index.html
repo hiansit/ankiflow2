@@ -4,15 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>汎用記憶定着・項目別ランク学習管理システム</title>
-  <link rel="stylesheet" href="css/style.css?v=20261027_02">
+  <link rel="stylesheet" href="css/style.css?v=20261027_03">
   <!-- Google Fonts -->
-
-
-
-
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Klee+One:wght@400;600&family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@500;700&display=swap" rel="stylesheet">
 </head>
 <body>
 
@@ -428,7 +424,53 @@
 
           <div class="card-top-info">
             <span id="card-material-label">教材項目</span>
-            <span id="card-current-rank" class="current-rank-badge">未学習</span>
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <button type="button" id="btn-toggle-card-style" class="btn-style-toggle" title="この教材の文字サイズ・フォントをその場で調整">🔤 文字・フォント</button>
+              <span id="card-current-rank" class="current-rank-badge">未学習</span>
+            </div>
+          </div>
+
+          <!-- 🔤 教材別インライン文字サイズ・フォント調整パネル -->
+          <div id="card-style-panel" class="card-style-panel" style="display: none;">
+            <div class="card-style-panel-header">
+              <span>🎨 表示フォント・サイズ調整 <small>（この教材の設定として自動保存）</small></span>
+              <div style="display: flex; gap: 0.35rem;">
+                <button type="button" id="btn-reset-card-style" class="btn-style-mini" title="標準のサイズ・フォントに戻す">↺ リセット</button>
+                <button type="button" id="btn-close-card-style" class="btn-style-mini" title="パネルを閉じる">✕</button>
+              </div>
+            </div>
+            <div class="card-style-rows">
+              <div class="card-style-row">
+                <span class="card-style-label">① 問題・見出し</span>
+                <select id="style-prompt-font" class="card-style-select" title="第1表示（問題）のフォント"></select>
+                <div class="card-style-size-ctrl">
+                  <button type="button" class="btn-style-step" data-target="prompt" data-delta="-0.2" title="文字を小さく">A-</button>
+                  <input type="range" id="style-prompt-size" min="1.0" max="5.0" step="0.1" value="4.0">
+                  <button type="button" class="btn-style-step" data-target="prompt" data-delta="0.2" title="文字を大きく">A+</button>
+                  <span id="style-prompt-size-val" class="card-style-size-val">4.0rem</span>
+                </div>
+              </div>
+              <div class="card-style-row">
+                <span class="card-style-label">② 補足・読み</span>
+                <select id="style-hint-font" class="card-style-select" title="第2表示（ピンイン・注音・補足）のフォント"></select>
+                <div class="card-style-size-ctrl">
+                  <button type="button" class="btn-style-step" data-target="hint" data-delta="-0.15" title="文字を小さく">A-</button>
+                  <input type="range" id="style-hint-size" min="0.8" max="3.2" step="0.1" value="1.1">
+                  <button type="button" class="btn-style-step" data-target="hint" data-delta="0.15" title="文字を大きく">A+</button>
+                  <span id="style-hint-size-val" class="card-style-size-val">1.1rem</span>
+                </div>
+              </div>
+              <div class="card-style-row">
+                <span class="card-style-label">③ 正解・意味</span>
+                <select id="style-answer-font" class="card-style-select" title="第3表示（回答・意味）のフォント"></select>
+                <div class="card-style-size-ctrl">
+                  <button type="button" class="btn-style-step" data-target="answer" data-delta="-0.15" title="文字を小さく">A-</button>
+                  <input type="range" id="style-answer-size" min="0.9" max="3.8" step="0.1" value="1.4">
+                  <button type="button" class="btn-style-step" data-target="answer" data-delta="0.15" title="文字を大きく">A+</button>
+                  <span id="style-answer-size-val" class="card-style-size-val">1.4rem</span>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div class="word-display" style="position: relative; display: flex; align-items: center; justify-content: center; gap: 0.75rem;">
@@ -783,16 +825,16 @@
   <!-- sql.js Wasm Library -->
   <script src="lib/sql-wasm.js"></script>
   <!-- ChineseTTS & SpeechService Library -->
-  <script src="chinese_tts_package/chinese-tts.js?v=20261027_02"></script>
-  <script src="js/speech.js?v=20261027_02"></script>
+  <script src="chinese_tts_package/chinese-tts.js?v=20261027_03"></script>
+  <script src="js/speech.js?v=20261027_03"></script>
   <!-- App Scripts -->
-  <script src="js/file_sync.js?v=20261027_02"></script>
-  <script src="js/auto_playback.js?v=20261027_02"></script>
-  <script src="js/study_session.js?v=20261027_02"></script>
-  <script src="js/material_manager.js?v=20261027_02"></script>
-  <script src="js/ui_views.js?v=20261027_02"></script>
-  <script src="js/db.js?v=20261027_02"></script>
-  <script src="js/app.js?v=20261027_02"></script>
+  <script src="js/file_sync.js?v=20261027_03"></script>
+  <script src="js/auto_playback.js?v=20261027_03"></script>
+  <script src="js/study_session.js?v=20261027_03"></script>
+  <script src="js/material_manager.js?v=20261027_03"></script>
+  <script src="js/ui_views.js?v=20261027_03"></script>
+  <script src="js/db.js?v=20261027_03"></script>
+  <script src="js/app.js?v=20261027_03"></script>
 </body>
 
 </html>

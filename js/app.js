@@ -94,6 +94,16 @@ class App {
   }
 
   /**
+   * DOM要素へのイベント登録ヘルパー
+   */
+  _on(id, event, handler) {
+    if (typeof document === 'undefined') return null;
+    const el = document.getElementById(id);
+    if (el) el.addEventListener(event, handler);
+    return el;
+  }
+
+  /**
    * イベントリスナーの登録（機能別に構造化）
    */
   initEvents() {
@@ -107,167 +117,101 @@ class App {
    * 画面ナビゲーション・教材セレクター関連イベント
    */
   initNavigationEvents() {
-    // タブ切り替え
-    const tabBtns = document.querySelectorAll('.tab-btn');
-    tabBtns.forEach(btn => {
-      btn.addEventListener('click', () => {
-        const targetId = btn.getAttribute('data-tab');
-        this.switchTab(targetId);
+    if (typeof document !== 'undefined') {
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => this.switchTab(btn.getAttribute('data-tab')));
       });
+    }
+
+    this._on('material-select', 'change', async (e) => {
+      this.materialType = e.target.value;
+      await this.onMaterialChanged();
     });
 
-    // 教材セレクター切り替え
-    const materialSelect = document.getElementById('material-select');
-    if (materialSelect) {
-      materialSelect.addEventListener('change', async (e) => {
-        this.materialType = e.target.value;
-        await this.onMaterialChanged();
-      });
-    }
+    this._on('scale-select', 'change', async (e) => {
+      this.currentScale = e.target.value;
+      if (this.materialType && this.dbService && typeof this.dbService.setMaterialDefaultScale === 'function') {
+        await this.dbService.setMaterialDefaultScale(this.materialType, this.currentScale);
+      }
+      const filterSelect = document.getElementById('material-rank-filter');
+      if (filterSelect) filterSelect.innerHTML = '<option value="">すべてのランク</option>';
 
-    // スケールセレクター切り替え（教材ごとのデフォルト評価スケール記憶＆表示連動）
-    const scaleSelect = document.getElementById('scale-select');
-    if (scaleSelect) {
-      scaleSelect.addEventListener('change', async (e) => {
-        this.currentScale = e.target.value;
-        if (this.materialType && this.dbService && typeof this.dbService.setMaterialDefaultScale === 'function') {
-          await this.dbService.setMaterialDefaultScale(this.materialType, this.currentScale);
-        }
-        // 教材一覧タブのランクフィルタ選択肢も新スケールに合わせて再構築
-        const filterSelect = document.getElementById('material-rank-filter');
-        if (filterSelect) filterSelect.innerHTML = '<option value="">すべてのランク</option>';
-
-        await this.renderDashboard();
-        if (this.isTabActive('tab-materials')) {
-          await this.renderMaterialsTable();
-        }
-        if (this.studySession && this.studySession.isActive && !this.studySession.isAutoPlay && this.studySessionManager) {
-          this.studySessionManager.renderRankButtons();
-        }
-        this.refreshStudySetupForm();
-        this.updateFileSyncUI();
-      });
-    }
+      await this.renderDashboard();
+      if (this.isTabActive('tab-materials')) {
+        await this.renderMaterialsTable();
+      }
+      if (this.studySession && this.studySession.isActive && !this.studySession.isAutoPlay && this.studySessionManager) {
+        this.studySessionManager.renderRankButtons();
+      }
+      this.refreshStudySetupForm();
+      this.updateFileSyncUI();
+    });
   }
 
   /**
    * ウェルカム画面・ファイル連携・DB管理関連イベント
    */
   initWelcomeAndFileEvents() {
-    // ウェルカム画面のボタン
-    const btnWelcomeOpen = document.getElementById('btn-welcome-open');
-    if (btnWelcomeOpen) {
-      btnWelcomeOpen.addEventListener('click', () => this.openLocalFilePicker());
-    }
+    this._on('btn-welcome-open', 'click', () => this.openLocalFilePicker());
+    this._on('btn-welcome-create', 'click', () => this.createNewDatabasePicker());
+    this._on('btn-welcome-demo', 'click', (e) => {
+      e.preventDefault();
+      this.startDemoDatabase();
+    });
+    this._on('btn-file-open', 'click', () => this.openLocalFilePicker());
+    this._on('btn-file-save-as', 'click', () => this.saveAsLocalFilePicker());
+    this._on('btn-export-db', 'click', () => this.exportDatabaseFile());
 
-    const btnWelcomeCreate = document.getElementById('btn-welcome-create');
-    if (btnWelcomeCreate) {
-      btnWelcomeCreate.addEventListener('click', () => this.createNewDatabasePicker());
-    }
-
-    const btnWelcomeDemo = document.getElementById('btn-welcome-demo');
-    if (btnWelcomeDemo) {
-      btnWelcomeDemo.addEventListener('click', (e) => {
-        e.preventDefault();
-        this.startDemoDatabase();
-      });
-    }
-
-    // 実ファイル連携バーのボタン
-    const btnFileOpen = document.getElementById('btn-file-open');
-    if (btnFileOpen) {
-      btnFileOpen.addEventListener('click', () => this.openLocalFilePicker());
-    }
-
-    const btnFileSaveAs = document.getElementById('btn-file-save-as');
-    if (btnFileSaveAs) {
-      btnFileSaveAs.addEventListener('click', () => this.saveAsLocalFilePicker());
-    }
-
-    // DB管理: エクスポート・インポート
-    const btnExport = document.getElementById('btn-export-db');
-    if (btnExport) {
-      btnExport.addEventListener('click', () => this.exportDatabaseFile());
-    }
-
-    const inputImport = document.getElementById('input-import-db');
-    if (inputImport) {
-      inputImport.addEventListener('change', async (e) => {
+    ['input-import-db', 'input-direct-file-open'].forEach(id => {
+      this._on(id, 'change', async (e) => {
         const file = e.target.files[0];
         if (file) {
           await this.importDatabaseFile(file);
-          inputImport.value = '';
+          e.target.value = '';
         }
       });
-    }
+    });
 
-    const inputDirect = document.getElementById('input-direct-file-open');
-    if (inputDirect) {
-      inputDirect.addEventListener('change', async (e) => {
-        const file = e.target.files[0];
-        if (file) {
-          await this.importDatabaseFile(file);
-          inputDirect.value = '';
-        }
-      });
-    }
+    this._on('input-import-pack', 'change', async (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        await this.importMaterialPackageFile(file);
+        e.target.value = '';
+      }
+    });
 
-    // 教材パック復元
-    const inputImportPack = document.getElementById('input-import-pack');
-    if (inputImportPack) {
-      inputImportPack.addEventListener('change', async (e) => {
-        const file = e.target.files[0];
-        if (file) {
-          await this.importMaterialPackageFile(file);
-          inputImportPack.value = '';
-        }
-      });
-    }
+    this._on('btn-reset-db', 'click', async () => {
+      if (confirm('データベースを初期状態にリセットしますか？\n学習履歴や追加した教材もリセットされます。')) {
+        await this.dbService.resetToInitial();
+        this.showToast('データベースを初期化しました。', 'info');
+        await this.refreshMaterialSelector();
+        await this.refreshScaleSelector();
+        await this.onMaterialChanged();
+        this.updateFileSyncUI();
+      }
+    });
 
-    // DB初期化リセット
-    const btnReset = document.getElementById('btn-reset-db');
-    if (btnReset) {
-      btnReset.addEventListener('click', async () => {
-        if (confirm('データベースを初期状態にリセットしますか？\n学習履歴や追加した教材もリセットされます。')) {
-          await this.dbService.resetToInitial();
-          this.showToast('データベースを初期化しました。', 'info');
-          await this.refreshMaterialSelector();
-          await this.refreshScaleSelector();
-          await this.onMaterialChanged();
-          this.updateFileSyncUI();
-        }
-      });
-    }
-
-    // カスタムSQL実行
-    const btnRunSql = document.getElementById('btn-run-sql');
-    if (btnRunSql) {
-      btnRunSql.addEventListener('click', () => this.executeCustomSql());
-    }
+    this._on('btn-run-sql', 'click', () => this.executeCustomSql());
   }
 
   /**
    * 学習セットアップフォームの現在値を収集
    */
   _collectStudySetupOptions() {
-    const startInput = document.getElementById('study-range-start');
-    const endInput = document.getElementById('study-range-end');
-    const rankSelect = document.getElementById('study-rank-filter');
-    const orderSelect = document.getElementById('auto-play-order-select');
-    const timerSelect = document.getElementById('auto-play-timer-select');
-    const intervalSelect = document.getElementById('auto-play-interval-select');
-
-    const startIdVal = startInput ? startInput.value.trim() : '';
-    const endIdVal = endInput ? endInput.value.trim() : '';
-    const rankFilterVal = rankSelect ? rankSelect.value : '';
+    const val = (id) => {
+      const el = document.getElementById(id);
+      return el ? el.value.trim() : '';
+    };
+    const startIdVal = val('study-range-start');
+    const endIdVal = val('study-range-end');
 
     return {
       startId: startIdVal ? parseInt(startIdVal, 10) : null,
       endId: endIdVal ? parseInt(endIdVal, 10) : null,
-      rankDefId: rankFilterVal || null,
-      autoPlayOrder: orderSelect ? orderSelect.value : 'sequential',
-      autoPlayTimer: timerSelect ? timerSelect.value : '15',
-      autoPlayPromptInterval: intervalSelect ? intervalSelect.value : '2.5',
+      rankDefId: val('study-rank-filter') || null,
+      autoPlayOrder: val('auto-play-order-select') || 'sequential',
+      autoPlayTimer: val('auto-play-timer-select') || '15',
+      autoPlayPromptInterval: val('auto-play-interval-select') || '2.5',
       autoPlayAnswerInterval: '2.0'
     };
   }
@@ -276,277 +220,157 @@ class App {
    * 学習セッション制御・音声設定関連イベント
    */
   initStudyControlEvents() {
-    // クイック学習開始
-    const btnUnmastered = document.getElementById('btn-quick-unmastered');
-    if (btnUnmastered) {
-      btnUnmastered.addEventListener('click', () => {
-        this.switchTab('tab-study');
-        this.startStudySession('unmastered_first', 15);
-      });
-    }
-
-    const btnMaintenance = document.getElementById('btn-quick-maintenance');
-    if (btnMaintenance) {
-      btnMaintenance.addEventListener('click', () => {
-        this.switchTab('tab-study');
-        this.startStudySession('maintenance', 15);
-      });
-    }
-
-    const btnSequential = document.getElementById('btn-quick-sequential');
-    if (btnSequential) {
-      btnSequential.addEventListener('click', () => {
-        this.switchTab('tab-study');
-        const modeSelect = document.getElementById('study-mode-select');
-        if (modeSelect) modeSelect.value = 'sequential';
-        const autoSettings = document.getElementById('auto-play-settings-panel');
-        if (autoSettings) autoSettings.style.display = 'none';
-        this.updateStudyQueuePreview();
-        this.startStudySession('sequential', 'all');
-      });
-    }
-
-    // 自動連続再生 クイック開始カード
-    const btnAutopilot = document.getElementById('btn-quick-autopilot');
-    if (btnAutopilot) {
-      btnAutopilot.addEventListener('click', () => {
-        this.switchTab('tab-study');
-        const modeSelect = document.getElementById('study-mode-select');
-        if (modeSelect) modeSelect.value = 'auto_playback';
-        const autoSettings = document.getElementById('auto-play-settings-panel');
-        if (autoSettings) autoSettings.style.display = 'block';
-        const countSelect = document.getElementById('study-count-select');
-        if (countSelect) countSelect.value = 'all';
-
-        this.updateStudyQueuePreview();
-        this.startStudySession('auto_playback', 'all', this._collectStudySetupOptions());
-      });
-    }
-
-    // ID範囲リセットボタン
-    const btnResetRange = document.getElementById('btn-reset-id-range');
-    if (btnResetRange) {
-      btnResetRange.addEventListener('click', () => {
-        const s = document.getElementById('study-range-start');
-        const e = document.getElementById('study-range-end');
-        if (s) s.value = '';
-        if (e) e.value = '';
-        this.updateRankFilterOptions();
-        this.updateStudyQueuePreview();
-      });
-    }
-
-    // ID範囲変更時のランク件数再集計＆プレビュー更新
-    ['study-range-start', 'study-range-end'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) {
-        el.addEventListener('input', () => {
-          this.updateRankFilterOptions();
-          this.updateStudyQueuePreview();
-        });
-        el.addEventListener('change', () => {
-          this.updateRankFilterOptions();
-          this.updateStudyQueuePreview();
-        });
-      }
+    this._on('btn-quick-unmastered', 'click', () => {
+      this.switchTab('tab-study');
+      this.startStudySession('unmastered_first', 15);
     });
 
-    // ランク選択変更時のピル選択状態同期＆プレビュー更新
-    const rankSelect = document.getElementById('study-rank-filter');
-    if (rankSelect) {
-      rankSelect.addEventListener('change', () => {
+    this._on('btn-quick-maintenance', 'click', () => {
+      this.switchTab('tab-study');
+      this.startStudySession('maintenance', 15);
+    });
+
+    this._on('btn-quick-sequential', 'click', () => {
+      this.switchTab('tab-study');
+      const modeSelect = document.getElementById('study-mode-select');
+      if (modeSelect) modeSelect.value = 'sequential';
+      const autoSettings = document.getElementById('auto-play-settings-panel');
+      if (autoSettings) autoSettings.style.display = 'none';
+      this.updateStudyQueuePreview();
+      this.startStudySession('sequential', 'all');
+    });
+
+    this._on('btn-quick-autopilot', 'click', () => {
+      this.switchTab('tab-study');
+      const modeSelect = document.getElementById('study-mode-select');
+      if (modeSelect) modeSelect.value = 'auto_playback';
+      const autoSettings = document.getElementById('auto-play-settings-panel');
+      if (autoSettings) autoSettings.style.display = 'block';
+      const countSelect = document.getElementById('study-count-select');
+      if (countSelect) countSelect.value = 'all';
+
+      this.updateStudyQueuePreview();
+      this.startStudySession('auto_playback', 'all', this._collectStudySetupOptions());
+    });
+
+    this._on('btn-reset-id-range', 'click', () => {
+      const s = document.getElementById('study-range-start');
+      const e = document.getElementById('study-range-end');
+      if (s) s.value = '';
+      if (e) e.value = '';
+      this.updateRankFilterOptions();
+      this.updateStudyQueuePreview();
+    });
+
+    ['study-range-start', 'study-range-end'].forEach(id => {
+      const handler = () => {
         this.updateRankFilterOptions();
         this.updateStudyQueuePreview();
-      });
-    }
+      };
+      this._on(id, 'input', handler);
+      this._on(id, 'change', handler);
+    });
 
-    // モード・件数変更時のリアルタイムプレビュー更新
-    const modeSelectEl = document.getElementById('study-mode-select');
-    if (modeSelectEl) {
-      modeSelectEl.addEventListener('change', () => {
-        const isAuto = (modeSelectEl.value === 'auto_playback');
-        const autoSettings = document.getElementById('auto-play-settings-panel');
-        if (autoSettings) {
-          autoSettings.style.display = isAuto ? 'block' : 'none';
-        }
-        // 自動再生モード選択時は出題件数を「対象全件 (all)」にデフォルト切り替え
-        if (isAuto) {
-          const countSelect = document.getElementById('study-count-select');
-          if (countSelect) countSelect.value = 'all';
-        }
-        this.updateStudyQueuePreview();
-      });
-    }
-    const countSelectEl = document.getElementById('study-count-select');
-    if (countSelectEl) {
-      countSelectEl.addEventListener('change', () => this.updateStudyQueuePreview());
-    }
+    this._on('study-rank-filter', 'change', () => {
+      this.updateRankFilterOptions();
+      this.updateStudyQueuePreview();
+    });
 
-    // カスタム学習開始
-    const btnStartCustom = document.getElementById('btn-start-custom-study');
-    if (btnStartCustom) {
-      btnStartCustom.addEventListener('click', () => {
-        const modeSelect = document.getElementById('study-mode-select');
+    this._on('study-mode-select', 'change', (e) => {
+      const isAuto = (e.target.value === 'auto_playback');
+      const autoSettings = document.getElementById('auto-play-settings-panel');
+      if (autoSettings) autoSettings.style.display = isAuto ? 'block' : 'none';
+      if (isAuto) {
         const countSelect = document.getElementById('study-count-select');
+        if (countSelect) countSelect.value = 'all';
+      }
+      this.updateStudyQueuePreview();
+    });
 
-        const mode = modeSelect ? modeSelect.value : 'unmastered_first';
-        const countVal = countSelect ? countSelect.value : '15';
-        const count = countVal === 'all' ? 'all' : parseInt(countVal, 10);
+    this._on('study-count-select', 'change', () => this.updateStudyQueuePreview());
 
-        this.startStudySession(mode, count, this._collectStudySetupOptions());
-      });
+    this._on('btn-start-custom-study', 'click', () => {
+      const modeSelect = document.getElementById('study-mode-select');
+      const countSelect = document.getElementById('study-count-select');
+      const mode = modeSelect ? modeSelect.value : 'unmastered_first';
+      const countVal = countSelect ? countSelect.value : '15';
+      const count = countVal === 'all' ? 'all' : parseInt(countVal, 10);
+      this.startStudySession(mode, count, this._collectStudySetupOptions());
+    });
+
+    this._on('btn-show-answer', 'click', () => this.revealAnswer());
+    this._on('btn-speak-prompt', 'click', () => this.speakCurrentPrompt());
+    this._on('btn-speak-answer', 'click', () => this.speakCurrentAnswer());
+    this._on('btn-pause-study', 'click', () => this.togglePauseStudySession());
+    this._on('btn-undo-study', 'click', () => this.undoStudyAssessment());
+    this._on('btn-resume-study', 'click', () => this.resumeStudySession());
+    this._on('btn-quit-study', 'click', () => this.quitStudySession());
+
+    this._on('btn-auto-play-prev', 'click', () => this.skipPrevAutoPlay());
+    this._on('btn-auto-play-pause', 'click', () => this.toggleAutoPlayPause());
+    this._on('btn-auto-play-next', 'click', () => this.skipNextAutoPlay());
+    this._on('btn-auto-play-stop', 'click', () => this.finishAutoPlay('自動連続再生を停止しました。'));
+
+    if (this.studySessionManager && typeof this.studySessionManager.initStylePanelEvents === 'function') {
+      this.studySessionManager.initStylePanelEvents();
     }
 
-    // フラッシュカード操作
-    const btnShowAnswer = document.getElementById('btn-show-answer');
-    if (btnShowAnswer) {
-      btnShowAnswer.addEventListener('click', () => this.revealAnswer());
-    }
-
-    const btnSpeakPrompt = document.getElementById('btn-speak-prompt');
-    if (btnSpeakPrompt) {
-      btnSpeakPrompt.addEventListener('click', () => this.speakCurrentPrompt());
-    }
-
-    const btnSpeakAnswer = document.getElementById('btn-speak-answer');
-    if (btnSpeakAnswer) {
-      btnSpeakAnswer.addEventListener('click', () => this.speakCurrentAnswer());
-    }
-
-    const btnPause = document.getElementById('btn-pause-study');
-    if (btnPause) {
-      btnPause.addEventListener('click', () => this.togglePauseStudySession());
-    }
-
-    const btnUndo = document.getElementById('btn-undo-study');
-    if (btnUndo) {
-      btnUndo.addEventListener('click', () => this.undoStudyAssessment());
-    }
-
-    const btnResume = document.getElementById('btn-resume-study');
-    if (btnResume) {
-      btnResume.addEventListener('click', () => this.resumeStudySession());
-    }
-
-    const btnQuit = document.getElementById('btn-quit-study');
-    if (btnQuit) {
-      btnQuit.addEventListener('click', () => this.quitStudySession());
-    }
-
-    // 自動連続再生 コントロールバーのボタン
-    const btnAutoPlayPrev = document.getElementById('btn-auto-play-prev');
-    if (btnAutoPlayPrev) {
-      btnAutoPlayPrev.addEventListener('click', () => this.skipPrevAutoPlay());
-    }
-
-    const btnAutoPlayPause = document.getElementById('btn-auto-play-pause');
-    if (btnAutoPlayPause) {
-      btnAutoPlayPause.addEventListener('click', () => this.toggleAutoPlayPause());
-    }
-
-    const btnAutoPlayNext = document.getElementById('btn-auto-play-next');
-    if (btnAutoPlayNext) {
-      btnAutoPlayNext.addEventListener('click', () => this.skipNextAutoPlay());
-    }
-
-    const btnAutoPlayStop = document.getElementById('btn-auto-play-stop');
-    if (btnAutoPlayStop) {
-      btnAutoPlayStop.addEventListener('click', () => this.finishAutoPlay('自動連続再生を停止しました。'));
-    }
-
-    // ブラウザタブ非アクティブ時の自動一時停止（※自動連続再生中または自動停止OFF設定時は停止させない）
     if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
       document.addEventListener('visibilitychange', () => {
         if (document.hidden && this.studySession.isActive && !this.studySession.isPaused) {
-          if (this.studySession.isAutoPlay) {
-            return;
-          }
-          if (this.studySessionManager && this.studySessionManager.getAutoPauseTimeoutSec() === 0) {
-            return;
-          }
+          if (this.studySession.isAutoPlay) return;
+          if (this.studySessionManager && this.studySessionManager.getAutoPauseTimeoutSec() === 0) return;
           this.pauseStudySession(true);
         }
       });
     }
 
-    // 自動一時停止（放置ガード）秒数・ON/OFF設定
     ['select-auto-pause-timeout', 'setup-auto-pause-select'].forEach(selectId => {
-      const selectAutoPause = document.getElementById(selectId);
-      if (selectAutoPause && this.studySessionManager) {
-        selectAutoPause.value = String(this.studySessionManager.getAutoPauseTimeoutSec());
-        selectAutoPause.addEventListener('change', (e) => {
+      if (this.studySessionManager) {
+        const el = this._on(selectId, 'change', (e) => {
           this.studySessionManager.setAutoPauseTimeoutSec(e.target.value);
           const sec = this.studySessionManager.getAutoPauseTimeoutSec();
           this.showToast(sec === 0 ? '⏱️ 自動一時停止を OFF にしました' : `⏱️ 自動一時停止を ${sec}秒 に設定しました`, 'info');
         });
+        if (el) el.value = String(this.studySessionManager.getAutoPauseTimeoutSec());
       }
     });
 
-    // 自動発音トグル & 読み上げ速度
-    const checkAutoSpeak = document.getElementById('check-auto-speak');
-    if (checkAutoSpeak) {
-      checkAutoSpeak.checked = this.speechService.isAutoSpeakEnabled;
-      checkAutoSpeak.addEventListener('change', (e) => {
-        this.speechService.setAutoSpeak(e.target.checked);
-        this.showToast(e.target.checked ? '🔊 自動発音を有効にしました' : '🔇 自動発音を無効にしました', 'info');
-      });
-    }
+    const checkAutoSpeak = this._on('check-auto-speak', 'change', (e) => {
+      this.speechService.setAutoSpeak(e.target.checked);
+      this.showToast(e.target.checked ? '🔊 自動発音を有効にしました' : '🔇 自動発音を無効にしました', 'info');
+    });
+    if (checkAutoSpeak) checkAutoSpeak.checked = this.speechService.isAutoSpeakEnabled;
 
-    const selectRate = document.getElementById('select-speech-rate');
-    if (selectRate) {
-      selectRate.value = String(this.speechService.speechRate);
-      selectRate.addEventListener('change', (e) => {
-        this.speechService.setRate(parseFloat(e.target.value));
-      });
-    }
+    const selectRate = this._on('select-speech-rate', 'change', (e) => {
+      this.speechService.setRate(parseFloat(e.target.value));
+    });
+    if (selectRate) selectRate.value = String(this.speechService.speechRate);
 
-    // 学習完了画面からの苦手項目即復習 & セットアップ画面へ戻る
-    const btnRetryWeak = document.getElementById('btn-retry-weak-study');
-    if (btnRetryWeak) {
-      btnRetryWeak.addEventListener('click', () => {
-        this.startRetryWeakStudySession();
-      });
-    }
-
-    const btnRestart = document.getElementById('btn-restart-study');
-    if (btnRestart) {
-      btnRestart.addEventListener('click', () => {
-        document.getElementById('study-complete-area').style.display = 'none';
-        document.getElementById('study-setup-area').style.display = 'block';
-        this.refreshStudySetupForm();
-      });
-    }
+    this._on('btn-retry-weak-study', 'click', () => this.startRetryWeakStudySession());
+    this._on('btn-restart-study', 'click', () => {
+      document.getElementById('study-complete-area').style.display = 'none';
+      document.getElementById('study-setup-area').style.display = 'block';
+      this.refreshStudySetupForm();
+    });
   }
 
   /**
    * 教材テーブル検索・フィルター・ページ表示件数関連イベント
    */
   initTableFilterEvents() {
-    const searchInput = document.getElementById('material-search');
-    if (searchInput) {
-      let searchDebounceTimer = null;
-      searchInput.addEventListener('input', () => {
-        if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
-        searchDebounceTimer = setTimeout(() => {
-          this.renderMaterialsTable();
-        }, 150);
-      });
-    }
-
-    const filterRank = document.getElementById('material-rank-filter');
-    if (filterRank) {
-      filterRank.addEventListener('change', () => this.renderMaterialsTable());
-    }
-
-    const pageSizeSelect = document.getElementById('materials-page-size');
-    if (pageSizeSelect) {
-      pageSizeSelect.addEventListener('change', (e) => {
-        if (this.uiViews && typeof this.uiViews.setMaterialsPageSize === 'function') {
-          this.uiViews.setMaterialsPageSize(e.target.value);
-          this.renderMaterialsTable();
-        }
-      });
-    }
+    let searchDebounceTimer = null;
+    this._on('material-search', 'input', () => {
+      if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(() => this.renderMaterialsTable(), 150);
+    });
+    this._on('material-rank-filter', 'change', () => this.renderMaterialsTable());
+    this._on('materials-page-size', 'change', (e) => {
+      if (this.uiViews && typeof this.uiViews.setMaterialsPageSize === 'function') {
+        this.uiViews.setMaterialsPageSize(e.target.value);
+        this.renderMaterialsTable();
+      }
+    });
   }
 
   /**
@@ -649,6 +473,9 @@ class App {
     // 学習中ならセッションリセット
     if (this.studySession.isActive) {
       this.quitStudySession();
+    }
+    if (this.studySessionManager && typeof this.studySessionManager.applyCardStyle === 'function') {
+      this.studySessionManager.applyCardStyle();
     }
 
     await this.renderDashboard();
@@ -798,6 +625,15 @@ class App {
   }
   finishAutoPlay(msg) {
     if (this.studySessionManager) this.studySessionManager.finishAutoPlay(msg);
+  }
+  async updateCardStyle(partialConfig) {
+    return this.studySessionManager ? await this.studySessionManager.updateCardStyle(partialConfig) : null;
+  }
+  async resetCardStyle() {
+    return this.studySessionManager ? await this.studySessionManager.resetCardStyle() : null;
+  }
+  toggleCardStylePanel(forceOpen = null) {
+    return this.studySessionManager ? this.studySessionManager.toggleStylePanel(forceOpen) : false;
   }
 
   // ==========================================

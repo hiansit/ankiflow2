@@ -190,6 +190,7 @@ class DBService {
         prompt_speech_column TEXT DEFAULT NULL,
         answer_speech_column TEXT DEFAULT NULL,
         default_scale_id TEXT DEFAULT 'simple_3',
+        style_config TEXT DEFAULT NULL,
         total_items INTEGER DEFAULT 0,
         created_at TEXT NOT NULL
       );
@@ -201,7 +202,8 @@ class DBService {
       "answer_lang TEXT DEFAULT 'auto'",
       "prompt_speech_column TEXT DEFAULT NULL",
       "answer_speech_column TEXT DEFAULT NULL",
-      "default_scale_id TEXT DEFAULT 'simple_3'"
+      "default_scale_id TEXT DEFAULT 'simple_3'",
+      "style_config TEXT DEFAULT NULL"
     ];
     for (const colDef of migrationCols) {
       try {
@@ -503,7 +505,8 @@ class DBService {
       answer_lang: meta.answer_lang || 'auto',
       prompt_speech_column: meta.prompt_speech_column || null,
       answer_speech_column: meta.answer_speech_column || null,
-      default_scale_id: meta.default_scale_id || 'simple_3'
+      default_scale_id: meta.default_scale_id || 'simple_3',
+      style_config: meta.style_config || null
     };
 
     const items = this.query(`SELECT * FROM ${meta.table_name} ORDER BY ${meta.id_column || 'id'} ASC`);
@@ -596,8 +599,8 @@ class DBService {
       // 3. カタログ登録
       this.db.run(`
         INSERT OR REPLACE INTO MATERIALS_CATALOG (
-          material_type, display_name, table_name, id_column, prompt_column, hint_columns, answer_column, prompt_lang, answer_lang, prompt_speech_column, answer_speech_column, default_scale_id, total_items, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          material_type, display_name, table_name, id_column, prompt_column, hint_columns, answer_column, prompt_lang, answer_lang, prompt_speech_column, answer_speech_column, default_scale_id, style_config, total_items, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         materialType,
         displayName,
@@ -611,6 +614,7 @@ class DBService {
         catalog.prompt_speech_column || null,
         catalog.answer_speech_column || null,
         catalog.default_scale_id || 'simple_3',
+        catalog.style_config ? (typeof catalog.style_config === 'string' ? catalog.style_config : JSON.stringify(catalog.style_config)) : null,
         items.length,
         pkg.exported_at || this.formatDate(new Date())
       ]);
@@ -830,8 +834,8 @@ class DBService {
       // カタログ登録
       this.db.run(`
         INSERT OR REPLACE INTO MATERIALS_CATALOG (
-          material_type, display_name, table_name, id_column, prompt_column, hint_columns, answer_column, prompt_lang, answer_lang, prompt_speech_column, answer_speech_column, total_items, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+          material_type, display_name, table_name, id_column, prompt_column, hint_columns, answer_column, prompt_lang, answer_lang, prompt_speech_column, answer_speech_column, default_scale_id, style_config, total_items, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
       `, [
         safeNewType,
         newDisplayName,
@@ -844,6 +848,8 @@ class DBService {
         answerLang || sourceMeta.answer_lang || 'auto',
         finalPromptSpeechCol,
         finalAnswerSpeechCol,
+        sourceMeta.default_scale_id || 'simple_3',
+        sourceMeta.style_config || null,
         totalItems
       ]);
     });
@@ -975,6 +981,111 @@ class DBService {
   }
 
   /**
+   * 教材ごとのフラッシュカード表示スタイル（フォント・サイズ）の初期値
+   */
+  static DEFAULT_STYLE_CONFIG = {
+    promptFont: 'default',
+    promptSize: 4.0,
+    hintFont: 'default',
+    hintSize: 1.1,
+    answerFont: 'default',
+    answerSize: 1.4
+  };
+
+  /**
+   * スタイル設定オブジェクトの正規化（範囲クランプ＆欠損キー補完）
+   */
+  normalizeStyleConfig(rawConfig = null) {
+    const def = DBService.DEFAULT_STYLE_CONFIG;
+    let parsed = rawConfig;
+    if (typeof rawConfig === 'string' && rawConfig.trim() !== '') {
+      try {
+        parsed = JSON.parse(rawConfig);
+      } catch (e) {
+        parsed = null;
+      }
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      return { ...def };
+    }
+    const clamp = (val, min, max, fallback) => {
+      const n = parseFloat(val);
+      if (isNaN(n)) return fallback;
+      return Math.round(Math.min(max, Math.max(min, n)) * 100) / 100;
+    };
+    return {
+      promptFont: typeof parsed.promptFont === 'string' && parsed.promptFont ? parsed.promptFont : def.promptFont,
+      promptSize: clamp(parsed.promptSize, 0.8, 6.0, def.promptSize),
+      hintFont: typeof parsed.hintFont === 'string' && parsed.hintFont ? parsed.hintFont : def.hintFont,
+      hintSize: clamp(parsed.hintSize, 0.7, 4.0, def.hintSize),
+      answerFont: typeof parsed.answerFont === 'string' && parsed.answerFont ? parsed.answerFont : def.answerFont,
+      answerSize: clamp(parsed.answerSize, 0.8, 5.0, def.answerSize)
+    };
+  }
+
+  /**
+   * 指定教材の表示フォント・サイズ設定を取得
+   */
+  getMaterialStyleConfig(materialType = 'chinese_top50') {
+    if (!materialType) return { ...DBService.DEFAULT_STYLE_CONFIG };
+    const meta = this.getMaterialMetadata(materialType);
+    if (meta && meta.style_config) {
+      return this.normalizeStyleConfig(meta.style_config);
+    }
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const localRaw = localStorage.getItem(`ankiflow_style_${materialType}`);
+        if (localRaw) return this.normalizeStyleConfig(localRaw);
+      }
+    } catch (e) {}
+    return { ...DBService.DEFAULT_STYLE_CONFIG };
+  }
+
+  /**
+   * 指定教材の表示フォント・サイズ設定を保存・永続化
+   */
+  async saveMaterialStyleConfig(materialType, partialOrFullConfig = {}) {
+    if (!materialType) return { ...DBService.DEFAULT_STYLE_CONFIG };
+    const current = this.getMaterialStyleConfig(materialType);
+    const merged = this.normalizeStyleConfig({ ...current, ...(partialOrFullConfig || {}) });
+    const jsonStr = JSON.stringify(merged);
+
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(`ankiflow_style_${materialType}`, jsonStr);
+      }
+    } catch (e) {}
+
+    if (this.db) {
+      this.db.run(
+        'UPDATE MATERIALS_CATALOG SET style_config = ? WHERE material_type = ?',
+        [jsonStr, materialType]
+      );
+      await this.saveToStorage();
+    }
+    return merged;
+  }
+
+  /**
+   * クエリ結果配列に対し、指定スケールへのランクマッピング情報を付与（内部共通ヘルパー）
+   */
+  _applyScaleMappingToRows(rows, scaleId) {
+    if (!scaleId || !Array.isArray(rows)) return rows;
+    rows.forEach(r => {
+      if (r.current_rank_def_id && r.scale_id && r.scale_id !== scaleId) {
+        const mapped = this.mapRankDefToScale(r.current_rank_def_id, scaleId);
+        if (mapped) {
+          r.mapped_rank_def_id = mapped.rank_def_id;
+          r.mapped_rank_level = mapped.rank_level;
+          r.mapped_rank_label = mapped.rank_label;
+          r.mapped_color_code = mapped.color_code;
+        }
+      }
+    });
+    return rows;
+  }
+
+  /**
    * 任意の rank_def_id を指定スケール (targetScaleId) 上の対応するランク定義へマッピング
    * 3段階評価 (simple_3) ⇔ 5段階評価 (detailed_5) の切り替え時もランク表示・集計を連動させる
    */
@@ -1103,24 +1214,7 @@ class DBService {
     }
 
     sql += ` ORDER BY m.${idCol} ASC`;
-    const rows = this.query(sql, params);
-
-    // スケール指定時は、別スケールで記録されたランクも指定スケールへマッピングした情報を補完
-    if (scaleId) {
-      rows.forEach(r => {
-        if (r.current_rank_def_id && r.scale_id && r.scale_id !== scaleId) {
-          const mapped = this.mapRankDefToScale(r.current_rank_def_id, scaleId);
-          if (mapped) {
-            r.mapped_rank_def_id = mapped.rank_def_id;
-            r.mapped_rank_level = mapped.rank_level;
-            r.mapped_rank_label = mapped.rank_label;
-            r.mapped_color_code = mapped.color_code;
-          }
-        }
-      });
-    }
-
-    return rows;
+    return this._applyScaleMappingToRows(this.query(sql, params), scaleId);
   }
 
   /**
@@ -1358,21 +1452,7 @@ class DBService {
       ${limitSql}
     `;
 
-    const rows = this.query(sql, queryParams);
-    if (scaleId) {
-      rows.forEach(r => {
-        if (r.current_rank_def_id && r.scale_id && r.scale_id !== scaleId) {
-          const mapped = this.mapRankDefToScale(r.current_rank_def_id, scaleId);
-          if (mapped) {
-            r.mapped_rank_def_id = mapped.rank_def_id;
-            r.mapped_rank_level = mapped.rank_level;
-            r.mapped_rank_label = mapped.rank_label;
-            r.mapped_color_code = mapped.color_code;
-          }
-        }
-      });
-    }
-    return rows;
+    return this._applyScaleMappingToRows(this.query(sql, queryParams), scaleId);
   }
 
   /**

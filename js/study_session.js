@@ -16,6 +16,58 @@ class StudySessionManager {
   static MAX_SANITY_TIME_MS = 60000; // 最大回答時間キャップ (60.0秒)
   static TIMER_TICK_MS = 100;        // タイマー更新間隔 (0.1秒)
 
+  static DEFAULT_STYLE_CONFIG = {
+    promptFont: 'default',
+    promptSize: 4.0,
+    hintFont: 'default',
+    hintSize: 1.1,
+    answerFont: 'default',
+    answerSize: 1.4
+  };
+
+  static FONT_PRESETS = [
+    {
+      id: 'default',
+      label: '標準ゴシック (Sans)',
+      family: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans TC', 'Noto Sans JP', 'Microsoft JhengHei', sans-serif"
+    },
+    {
+      id: 'kaiti',
+      label: '中文・楷書体 (標楷體 / 教科書)',
+      family: "'BiauKai', 'DFKai-SB', '標楷體', 'KaiTi', '楷体', 'STKaiti', 'Klee One', serif"
+    },
+    {
+      id: 'ming',
+      label: '中文・明朝体 (宋朝 / 新細明體)',
+      family: "'Noto Serif TC', 'PMingLiU', '新細明體', 'MingLiU', 'Songti TC', 'SimSun', 'Yu Mincho', serif"
+    },
+    {
+      id: 'klee',
+      label: '手書き教科書体 (Klee / UD教科書)',
+      family: "'Klee One', 'UD Digi Kyokasho N-R', 'UD Digi Kyokasho NK-R', 'BiauKai', 'DFKai-SB', sans-serif"
+    },
+    {
+      id: 'pinyin',
+      label: 'ピンイン・声調くっきり (欧文Sans)',
+      family: "'Lucida Sans Unicode', 'Calibri', 'Segoe UI', 'Arial', 'Helvetica Neue', 'Inter', sans-serif"
+    },
+    {
+      id: 'ja_ud',
+      label: '日本語 UDゴシック (長文向き)',
+      family: "'BIZ UDPGothic', 'Hiragino Kaku Gothic ProN', 'Meiryo', 'Yu Gothic UI', 'Noto Sans JP', sans-serif"
+    },
+    {
+      id: 'en_serif',
+      label: '英語・欧文セリフ (Georgia / 明朝)',
+      family: "'Georgia', 'Cambria', 'Times New Roman', 'BIZ UDPMincho', 'Yu Mincho', 'Noto Serif TC', serif"
+    },
+    {
+      id: 'mono',
+      label: '等幅・モノスペース (Consolas)',
+      family: "'Consolas', 'Monaco', 'Courier New', 'BIZ UDGothic', monospace"
+    }
+  ];
+
   constructor(app = null, dbService = null, speechService = null) {
     this.app = app;
     this.dbService = dbService;
@@ -302,7 +354,7 @@ class StudySessionManager {
           const box = this.createEl('div');
           if (box) {
             box.className = 'phonetic-box';
-            box.innerHTML = `${this.escapeHtml(val)} <span style="font-size: 0.8rem; margin-left: 0.25rem;">🔊</span>`;
+            box.innerHTML = `${this.escapeHtml(val)} <span style="font-size: 0.78em; opacity: 0.75; margin-left: 0.25rem;">🔊</span>`;
             box.title = `クリックで発音: ${val}`;
             box.addEventListener('click', (e) => {
               e.stopPropagation();
@@ -320,6 +372,9 @@ class StudySessionManager {
     if (answerEl) {
       answerEl.textContent = currentItem.display_answer || '-';
     }
+
+    // 現在の教材専用の表示フォント・サイズ設定をカード要素へ適用
+    this.applyCardStyle();
 
     // ボタン・状態リセット
     session.isAnswerShown = false;
@@ -450,75 +505,233 @@ class StudySessionManager {
   }
 
   // ==========================================
+  // 教材別インライン文字サイズ・フォント設定制御
+  // ==========================================
+
+  /**
+   * フォントプリセットIDからCSS font-family文字列を取得
+   */
+  getFontFamilyById(fontId = 'default') {
+    const preset = StudySessionManager.FONT_PRESETS.find(p => p.id === fontId) || StudySessionManager.FONT_PRESETS[0];
+    return preset.family;
+  }
+
+  /**
+   * 現在の教材（または指定教材）のスタイル設定を取得
+   */
+  getCurrentStyleConfig(materialType = null) {
+    const matType = materialType || (this.app ? this.app.materialType : 'chinese_top50');
+    if (this.dbService && typeof this.dbService.getMaterialStyleConfig === 'function') {
+      return this.dbService.getMaterialStyleConfig(matType);
+    }
+    return { ...StudySessionManager.DEFAULT_STYLE_CONFIG };
+  }
+
+  /**
+   * フラッシュカードの各表示領域（問題・補足・回答）およびインライン調整パネルにフォント・サイズを適用
+   */
+  applyCardStyle(customConfig = null) {
+    const cfg = customConfig || this.getCurrentStyleConfig();
+    const promptFontFamily = this.getFontFamilyById(cfg.promptFont);
+    const hintFontFamily = this.getFontFamilyById(cfg.hintFont);
+    const answerFontFamily = this.getFontFamilyById(cfg.answerFont);
+
+    // 1. 第1表示（問題・見出し）
+    const promptEl = this.getEl('card-prompt');
+    if (promptEl && promptEl.style) {
+      promptEl.style.fontFamily = promptFontFamily;
+      promptEl.style.fontSize = `${cfg.promptSize}rem`;
+      promptEl.style.lineHeight = cfg.promptSize <= 2.4 ? '1.45' : '1.22';
+      promptEl.style.wordBreak = 'break-word';
+    }
+
+    // 2. 第2表示（補足・読み: ピンイン / 注音など）
+    const hintsContainer = this.getEl('card-hints-row');
+    if (hintsContainer) {
+      if (hintsContainer.style) {
+        hintsContainer.style.fontFamily = hintFontFamily;
+      }
+      if (typeof hintsContainer.querySelectorAll === 'function') {
+        hintsContainer.querySelectorAll('.phonetic-box').forEach(box => {
+          if (box && box.style) {
+            box.style.fontFamily = hintFontFamily;
+            box.style.fontSize = `${cfg.hintSize}rem`;
+            box.style.lineHeight = '1.45';
+          }
+        });
+      }
+    }
+
+    // 3. 第3表示（正解・意味）
+    const answerEl = this.getEl('card-answer');
+    if (answerEl && answerEl.style) {
+      answerEl.style.fontFamily = answerFontFamily;
+      answerEl.style.fontSize = `${cfg.answerSize}rem`;
+      answerEl.style.lineHeight = '1.45';
+      answerEl.style.wordBreak = 'break-word';
+    }
+
+    // 4. 調整パネルのUIコントロール表示を同期
+    const syncCtrl = (target, fontVal, sizeVal) => {
+      const fontSel = this.getEl(`style-${target}-font`);
+      const sizeInput = this.getEl(`style-${target}-size`);
+      const sizeLabel = this.getEl(`style-${target}-size-val`);
+      if (fontSel && fontSel.value !== fontVal) fontSel.value = fontVal;
+      if (sizeInput && String(sizeInput.value) !== String(sizeVal)) sizeInput.value = String(sizeVal);
+      if (sizeLabel) sizeLabel.textContent = `${Number(sizeVal).toFixed(1)}rem`;
+    };
+    syncCtrl('prompt', cfg.promptFont, cfg.promptSize);
+    syncCtrl('hint', cfg.hintFont, cfg.hintSize);
+    syncCtrl('answer', cfg.answerFont, cfg.answerSize);
+    return cfg;
+  }
+
+  /**
+   * 現在の教材のフォント・サイズ設定をその場で変更＆即時保存
+   */
+  async updateCardStyle(partialConfig = {}) {
+    this.touchActivity();
+    const matType = this.app ? this.app.materialType : 'chinese_top50';
+
+    // 裏面（補足・回答）のスタイル操作時にまだ答えが閉じている場合は、結果が見えるよう自動展開
+    const isBackSideChanged = ('hintFont' in partialConfig) || ('hintSize' in partialConfig) || ('answerFont' in partialConfig) || ('answerSize' in partialConfig);
+    if (isBackSideChanged && this.state && this.state.isActive && !this.state.isAutoPlay && !this.state.isAnswerShown) {
+      this.revealAnswer(false);
+    }
+
+    let nextCfg;
+    if (this.dbService && typeof this.dbService.saveMaterialStyleConfig === 'function') {
+      nextCfg = await this.dbService.saveMaterialStyleConfig(matType, partialConfig);
+    } else {
+      nextCfg = { ...this.getCurrentStyleConfig(matType), ...partialConfig };
+    }
+
+    this.applyCardStyle(nextCfg);
+    if (this.app && typeof this.app.updateFileSyncUI === 'function') {
+      this.app.updateFileSyncUI();
+    }
+    return nextCfg;
+  }
+
+  /**
+   * 現在の教材のフォント・サイズ設定を初期値にリセット
+   */
+  async resetCardStyle() {
+    const nextCfg = await this.updateCardStyle({ ...StudySessionManager.DEFAULT_STYLE_CONFIG });
+    if (this.app && typeof this.app.showToast === 'function') {
+      this.app.showToast('🎨 この教材の文字サイズ・フォントを標準に戻しました', 'info');
+    }
+    return nextCfg;
+  }
+
+  /**
+   * フォント選択ドロップダウンの選択肢を初期化
+   */
+  populateStyleFontSelects() {
+    ['style-prompt-font', 'style-hint-font', 'style-answer-font'].forEach(id => {
+      const sel = this.getEl(id);
+      if (!sel || (sel.options && sel.options.length > 0)) return;
+      sel.innerHTML = StudySessionManager.FONT_PRESETS.map(
+        p => `<option value="${p.id}">${this.escapeHtml(p.label)}</option>`
+      ).join('');
+    });
+  }
+
+  /**
+   * インライン文字・フォント調整パネルの開閉トグル
+   */
+  toggleStylePanel(forceOpen = null) {
+    this.touchActivity();
+    const panel = this.getEl('card-style-panel');
+    const toggleBtn = this.getEl('btn-toggle-card-style');
+    if (!panel) return false;
+
+    this.populateStyleFontSelects();
+    const isCurrentlyOpen = panel.style.display !== 'none';
+    const nextOpen = (forceOpen !== null && forceOpen !== undefined) ? Boolean(forceOpen) : !isCurrentlyOpen;
+
+    panel.style.display = nextOpen ? 'block' : 'none';
+    if (toggleBtn && toggleBtn.classList) {
+      toggleBtn.classList.toggle('active', nextOpen);
+    }
+    if (nextOpen) {
+      this.applyCardStyle();
+    }
+    return nextOpen;
+  }
+
+  /**
+   * インライン文字・フォント調整パネルのイベント登録
+   */
+  initStylePanelEvents() {
+    this.populateStyleFontSelects();
+
+    const toggleBtn = this.getEl('btn-toggle-card-style');
+    if (toggleBtn) toggleBtn.addEventListener('click', () => this.toggleStylePanel());
+
+    const closeBtn = this.getEl('btn-close-card-style');
+    if (closeBtn) closeBtn.addEventListener('click', () => this.toggleStylePanel(false));
+
+    const resetBtn = this.getEl('btn-reset-card-style');
+    if (resetBtn) resetBtn.addEventListener('click', () => this.resetCardStyle());
+
+    // フォント変更セレクト & サイズスライダー
+    [
+      { target: 'prompt', fontKey: 'promptFont', sizeKey: 'promptSize' },
+      { target: 'hint', fontKey: 'hintFont', sizeKey: 'hintSize' },
+      { target: 'answer', fontKey: 'answerFont', sizeKey: 'answerSize' }
+    ].forEach(({ target, fontKey, sizeKey }) => {
+      const fontSel = this.getEl(`style-${target}-font`);
+      if (fontSel) {
+        fontSel.addEventListener('change', (e) => {
+          this.updateCardStyle({ [fontKey]: e.target.value });
+        });
+      }
+      const sizeRange = this.getEl(`style-${target}-size`);
+      if (sizeRange) {
+        sizeRange.addEventListener('input', (e) => {
+          this.updateCardStyle({ [sizeKey]: parseFloat(e.target.value) });
+        });
+      }
+    });
+
+    // [A-] / [A+] ステップボタン
+    if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {
+      document.querySelectorAll('.btn-style-step').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const target = btn.getAttribute('data-target'); // 'prompt' | 'hint' | 'answer'
+          const delta = parseFloat(btn.getAttribute('data-delta') || '0');
+          if (!target || isNaN(delta)) return;
+          const sizeKey = `${target}Size`;
+          const curCfg = this.getCurrentStyleConfig();
+          const curVal = parseFloat(curCfg[sizeKey] || 1.4);
+          const nextVal = Math.round((curVal + delta) * 100) / 100;
+          this.updateCardStyle({ [sizeKey]: nextVal });
+        });
+      });
+    }
+  }
+
+  // ==========================================
   // 自動連続再生（AutoPlaybackManagerへの委譲プロキシ）
   // ==========================================
-  get autoPlayback() {
-    return this.autoPlaybackManager;
-  }
-
-  startAutoPlay() {
-    if (this.autoPlaybackManager) this.autoPlaybackManager.runAutoPlayCycle();
-  }
-
-  startAutoPlayTimer() {
-    if (this.autoPlaybackManager) this.autoPlaybackManager.startAutoPlayTimer();
-  }
-
-  stopAutoPlayTimer() {
-    if (this.autoPlaybackManager) this.autoPlaybackManager.stopAutoPlayTimer();
-  }
-
-  updateAutoPlayTimerDisplay() {
-    if (this.autoPlaybackManager) this.autoPlaybackManager.updateAutoPlayTimerDisplay();
-  }
-
-  runAutoPlayCycle() {
-    if (this.autoPlaybackManager) this.autoPlaybackManager.runAutoPlayCycle();
-  }
-
-  advanceAutoPlay(token) {
-    if (this.autoPlaybackManager) this.autoPlaybackManager.advanceAutoPlay(token);
-  }
-
-  isAutoPlayAborted(token) {
-    return this.autoPlaybackManager ? this.autoPlaybackManager.isAutoPlayAborted(token) : true;
-  }
-
-  sleepAsync(ms, token) {
-    return this.autoPlaybackManager ? this.autoPlaybackManager.sleepAsync(ms, token) : Promise.resolve();
-  }
-
-  speakCurrentPromptAsync() {
-    return this.autoPlaybackManager ? this.autoPlaybackManager.speakCurrentPromptAsync() : Promise.resolve();
-  }
-
-  speakCurrentAnswerAsync() {
-    return this.autoPlaybackManager ? this.autoPlaybackManager.speakCurrentAnswerAsync() : Promise.resolve();
-  }
-
-  setAutoPlayCardStatus(msg) {
-    if (this.autoPlaybackManager) this.autoPlaybackManager.setAutoPlayCardStatus(msg);
-  }
-
-  stopCurrentSpeechAndTimer() {
-    if (this.autoPlaybackManager) this.autoPlaybackManager.stopCurrentSpeechAndTimer();
-  }
-
-  skipNextAutoPlay() {
-    if (this.autoPlaybackManager) this.autoPlaybackManager.skipNext();
-  }
-
-  skipPrevAutoPlay() {
-    if (this.autoPlaybackManager) this.autoPlaybackManager.skipPrev();
-  }
-
-  toggleAutoPlayPause() {
-    if (this.autoPlaybackManager) this.autoPlaybackManager.togglePause();
-  }
-
-  finishAutoPlay(msg) {
-    if (this.autoPlaybackManager) this.autoPlaybackManager.finish(msg);
-  }
+  get autoPlayback() { return this.autoPlaybackManager; }
+  startAutoPlay() { if (this.autoPlaybackManager) this.autoPlaybackManager.runAutoPlayCycle(); }
+  startAutoPlayTimer() { if (this.autoPlaybackManager) this.autoPlaybackManager.startAutoPlayTimer(); }
+  stopAutoPlayTimer() { if (this.autoPlaybackManager) this.autoPlaybackManager.stopAutoPlayTimer(); }
+  updateAutoPlayTimerDisplay() { if (this.autoPlaybackManager) this.autoPlaybackManager.updateAutoPlayTimerDisplay(); }
+  runAutoPlayCycle() { if (this.autoPlaybackManager) this.autoPlaybackManager.runAutoPlayCycle(); }
+  advanceAutoPlay(token) { if (this.autoPlaybackManager) this.autoPlaybackManager.advanceAutoPlay(token); }
+  isAutoPlayAborted(token) { return this.autoPlaybackManager ? this.autoPlaybackManager.isAutoPlayAborted(token) : true; }
+  sleepAsync(ms, token) { return this.autoPlaybackManager ? this.autoPlaybackManager.sleepAsync(ms, token) : Promise.resolve(); }
+  speakCurrentPromptAsync() { return this.autoPlaybackManager ? this.autoPlaybackManager.speakCurrentPromptAsync() : Promise.resolve(); }
+  speakCurrentAnswerAsync() { return this.autoPlaybackManager ? this.autoPlaybackManager.speakCurrentAnswerAsync() : Promise.resolve(); }
+  setAutoPlayCardStatus(msg) { if (this.autoPlaybackManager) this.autoPlaybackManager.setAutoPlayCardStatus(msg); }
+  stopCurrentSpeechAndTimer() { if (this.autoPlaybackManager) this.autoPlaybackManager.stopCurrentSpeechAndTimer(); }
+  skipNextAutoPlay() { if (this.autoPlaybackManager) this.autoPlaybackManager.skipNext(); }
+  skipPrevAutoPlay() { if (this.autoPlaybackManager) this.autoPlaybackManager.skipPrev(); }
+  toggleAutoPlayPause() { if (this.autoPlaybackManager) this.autoPlaybackManager.togglePause(); }
+  finishAutoPlay(msg) { if (this.autoPlaybackManager) this.autoPlaybackManager.finish(msg); }
 
   // ==========================================
   // タイマー制御・放置ガード（自動一時停止と再開）

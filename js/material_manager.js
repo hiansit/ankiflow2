@@ -592,23 +592,29 @@ class MaterialManager {
   }
 
   /**
+   * Blobをファイルとしてダウンロードさせる共通ヘルパー
+   */
+  _downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  /**
    * 教材パック(JSON)のエクスポート
    */
   exportMaterialPackageFile(materialType, displayName) {
     try {
       const pkg = this.dbService.exportMaterialPackage(materialType);
-      const jsonStr = JSON.stringify(pkg, null, 2);
-      const blob = new Blob([jsonStr], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
+      const blob = new Blob([JSON.stringify(pkg, null, 2)], { type: 'application/json' });
       const safeName = (displayName || materialType).replace(/[^a-zA-Z0-9_\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/g, '_');
       const dateStr = new Date().toISOString().slice(0, 10);
-      a.href = url;
-      a.download = `${safeName}_learning_pack_${dateStr}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      this._downloadBlob(blob, `${safeName}_learning_pack_${dateStr}.json`);
 
       if (this.app && typeof this.app.showToast === 'function') {
         this.app.showToast(`教材パック「${displayName}」を出力しました。`, 'success');
@@ -627,16 +633,9 @@ class MaterialManager {
   exportMaterialCsvFile(materialType, displayName) {
     try {
       const csvStr = this.dbService.exportMaterialAsCsv(materialType);
-      const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csvStr], { type: 'text/csv;charset=utf-8;' }); // UTF-8 BOM付き
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
+      const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csvStr], { type: 'text/csv;charset=utf-8;' });
       const safeName = (displayName || materialType).replace(/[^a-zA-Z0-9_\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/g, '_');
-      a.href = url;
-      a.download = `${safeName}_materials.csv`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      this._downloadBlob(blob, `${safeName}_materials.csv`);
 
       if (this.app && typeof this.app.showToast === 'function') {
         this.app.showToast(`教材CSV「${displayName}」を出力しました。`, 'success');
